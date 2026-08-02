@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-registry"
+description = "Feature inventory and live process registry for nguo-3d: what the app can do, and what it is doing right now."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Mirror of `nguo-app`'s feature of the same name, forwarded by it. The only
+# thing it does is make `FEATURES["ui.debug_overlay"].enabled` true, so the
+# inventory reports what was actually compiled in rather than guessing from
+# `debug_assertions`.
+debug-overlay = []
+
+# No new dependencies. `tracing` is already the logging spine of both
+# workspaces and `thiserror` is the project's typed-error standard
+# (ui/docs/OBSERVABILITY.md §6). The feature inventory is a plain `const` table —
+# the same encoding `nguo_cli::ops::SPECS` already uses — so there is no
+# `inventory`/`linkme` dependency and no init order to get wrong.
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }

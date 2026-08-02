@@ -1,0 +1,290 @@
+{
+  "schema_version": 2,
+  "meta": {
+    "name": "A-line skirt",
+    "author": "Alex Mkwizu <a.mkwizu@seedexr.com>",
+    "display_unit": "Centimeter",
+    "notes": "Frozen v1 fixture. Never regenerate this file - it is the historical artifact the v1 -> v2 migration is tested against."
+  },
+  "pieces": {
+    "0": {
+      "name": "Front",
+      "network": {
+        "vertices": {
+          "0": {
+            "pos": {
+              "x": 0.0,
+              "y": 0.0
+            }
+          },
+          "1": {
+            "pos": {
+              "x": 240.0,
+              "y": 0.0
+            }
+          },
+          "2": {
+            "pos": {
+              "x": 300.0,
+              "y": 600.0
+            }
+          },
+          "3": {
+            "pos": {
+              "x": 0.0,
+              "y": 600.0
+            }
+          }
+        },
+        "edges": {
+          "0": {
+            "start": 0,
+            "end": 1,
+            "geom": "Line",
+            "semantic": "Seam"
+          },
+          "1": {
+            "start": 1,
+            "end": 2,
+            "geom": {
+              "Cubic": {
+                "c1": {
+                  "x": 260.0,
+                  "y": 200.0
+                },
+                "c2": {
+                  "x": 290.0,
+                  "y": 400.0
+                }
+              }
+            },
+            "semantic": "Seam"
+          },
+          "2": {
+            "start": 2,
+            "end": 3,
+            "geom": "Line",
+            "semantic": "Cut"
+          },
+          "3": {
+            "start": 3,
+            "end": 0,
+            "geom": "Line",
+            "semantic": "Fold"
+          }
+        }
+      },
+      "transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "material": 0,
+      "features": {
+        "0": {
+          "GrainLine": {
+            "from": {
+              "x": 30.0,
+              "y": 60.0
+            },
+            "to": {
+              "x": 30.0,
+              "y": 540.0
+            }
+          }
+        },
+        "1": {
+          "Notch": {
+            "edge": 1,
+            "t": 0.5,
+            "kind": "V"
+          }
+        }
+      },
+      "symmetry": {
+        "axis_from": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "axis_to": {
+          "x": 0.0,
+          "y": 600.0
+        },
+        "mirrored_piece": null
+      },
+      "default_allowance_mm": 12.5,
+      "placement": null
+    },
+    "1": {
+      "name": "Back",
+      "network": {
+        "vertices": {
+          "0": {
+            "pos": {
+              "x": 400.0,
+              "y": 0.0
+            }
+          },
+          "1": {
+            "pos": {
+              "x": 640.0,
+              "y": 0.0
+            }
+          },
+          "2": {
+            "pos": {
+              "x": 700.0,
+              "y": 600.0
+            }
+          },
+          "3": {
+            "pos": {
+              "x": 400.0,
+              "y": 600.0
+            }
+          }
+        },
+        "edges": {
+          "0": {
+            "start": 0,
+            "end": 1,
+            "geom": "Line",
+            "semantic": "Seam"
+          },
+          "1": {
+            "start": 1,
+            "end": 2,
+            "geom": "Line",
+            "semantic": "Seam"
+          },
+          "2": {
+            "start": 2,
+            "end": 3,
+            "geom": "Line",
+            "semantic": "Cut"
+          },
+          "3": {
+            "start": 3,
+            "end": 0,
+            "geom": "Line",
+            "semantic": "Fold"
+          }
+        }
+      },
+      "transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        400.0,
+        0.0
+      ],
+      "material": 0,
+      "features": {},
+      "symmetry": null,
+      "default_allowance_mm": 12.5,
+      "placement": {
+        "position_mm": [
+          0.0,
+          700.0,
+          -120.0
+        ],
+        "rotation_quat": [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ]
+      }
+    }
+  },
+  "seams": {
+    "0": {
+      "a": {
+        "piece": 0,
+        "edges": [
+          [
+            1,
+            false
+          ]
+        ],
+        "span": [
+          0.0,
+          1.0
+        ]
+      },
+      "b": {
+        "piece": 1,
+        "edges": [
+          [
+            1,
+            true
+          ]
+        ],
+        "span": [
+          0.0,
+          1.0
+        ]
+      },
+      "allowance_mm": 12.5,
+      "ease_ratio": 1.0,
+      "note": "side seam"
+    }
+  },
+  "materials": {
+    "0": {
+      "name": "Wool gabardine",
+      "weight_gsm": 260.0,
+      "thickness_mm": 0.6,
+      "stretch_warp": 0.01,
+      "stretch_weft": 0.015,
+      "bend": 0.00004,
+      "friction": 0.5,
+      "color_srgb": [
+        0.18,
+        0.2,
+        0.28
+      ]
+    }
+  },
+  "params": {
+    "ease": {
+      "expr": "2cm",
+      "unit": "Millimeter"
+    },
+    "quarter_waist": {
+      "expr": "(waist + ease) / 4",
+      "unit": "Millimeter"
+    },
+    "waist": {
+      "expr": "72cm",
+      "unit": "Millimeter",
+      "description": "body waist girth"
+    }
+  },
+  "avatar": {
+    "name": "Standard 38",
+    "measurements": {
+      "bust": 900.0,
+      "hip": 980.0,
+      "waist": 720.0
+    },
+    "pose": "a-pose"
+  },
+  "camera": {
+    "eye_mm": [
+      0.0,
+      900.0,
+      2500.0
+    ],
+    "target_mm": [
+      0.0,
+      900.0,
+      0.0
+    ],
+    "fov_y_rad": 0.7
+  }
+}

@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-canvas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nguo-gpu = { workspace = true }
+iced = { workspace = true }
+# kurbo/peniko come through vello so the versions cannot drift.
+vello = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

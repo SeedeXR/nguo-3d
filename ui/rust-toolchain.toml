@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Pinned so every dev + CI runner builds identically. Matches core-engine.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+targets = []

@@ -1,0 +1,182 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Primary CI — Apple Silicon / Metal, the project's first-class platform
+# (platform order: macOS -> Linux -> Windows).
+#
+# RUNNER LABEL: the brief asked for `macos-14`; this uses `macos-15`.
+# Reason, verified 2026-08-01: actions/runner-images#13518 deprecates the
+# macOS 14 Sonoma images from 2026-07-06, brownouts them 2026-10-05..10-31 and
+# removes them 2026-11-02, at which point `runs-on: macos-14` fails with an
+# error. macos-15 is the same Apple-Silicon (arm64) hardware class, so Metal
+# behaviour is unchanged. See ui/docs/CI.md for the citation.
+#
+# Every gate below calls a `make` target from the repo-root Makefile so that
+# `make ci` locally runs *exactly* what CI runs. Do not inline cargo commands
+# here — that is how CI and local drift apart.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch cancels the older run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0 # smaller target dir; the runner has ~14 GB
+  RUST_BACKTRACE: 1
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Static gates. Cheapest and most likely to fail, so they run first and
+  # independently of the test job.
+  # -------------------------------------------------------------------------
+  lint:
+    name: fmt + clippy + wgpu pin
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml (stable + rustfmt + clippy) in both workspaces is
+      # honoured automatically by rustup; no toolchain action needed.
+      - name: Toolchain
+        run: rustc --version && cargo --version && cargo clippy --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core-engine
+            ui
+          key: lint
+
+      # Reads Cargo.lock only — runs before anything is compiled, so a wgpu
+      # split is reported in seconds rather than after a 20-minute build.
+      - name: Single wgpu major per workspace
+        run: make check-wgpu
+
+      - name: cargo fmt --all --check (both workspaces)
+        run: make fmt
+
+      - name: cargo clippy --all-targets -D warnings (both workspaces)
+        run: make clippy
+
+  # -------------------------------------------------------------------------
+  # The test suite. --no-fail-fast so one broken target does not hide the rest.
+  # This job is REQUIRED and is expected to be RED until the engine-api
+  # regression + engine-io collada/gltf/usda failures are fixed (338 pass /
+  # 4 targets failing as of 2026-08-01). That is deliberate: CI must not
+  # pretend the suite is green.
+  # -------------------------------------------------------------------------
+  test:
+    name: cargo test (both workspaces)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core-engine
+            ui
+          key: test
+      - run: make test
+
+  # -------------------------------------------------------------------------
+  # Real GPU work. macOS runners expose a Metal-capable adapter (Apple
+  # Paravirtual device under Virtualization.framework) — gfx-rs/wgpu runs its
+  # own `gpu-test` job on macos-14 for exactly this reason. There is no
+  # software Metal fallback on Apple platforms, so if this job cannot get an
+  # adapter the correct action is to move it to a self-hosted Mac, NOT to
+  # weaken the assertion.
+  # -------------------------------------------------------------------------
+  gpu:
+    name: Metal smoke + 10x determinism
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core-engine
+          key: gpu
+
+      - name: Build mguso (release)
+        run: make build-engine
+
+      # Asserts backend == Metal and that the SAXPY probe returned the right
+      # numbers — i.e. the GPU actually computed, not just enumerated.
+      - name: GPU smoke test
+        run: make gpu-smoke EXPECT_BACKEND=Metal
+
+      # Determinism gate (core-engine/docs/DEVELOPING.md §6): run the scenario
+      # 10x, one difference fails the
+      # suite. Uses the implicit/GPU solver — the path where nondeterminism
+      # would actually come from.
+      - name: 10x determinism gate
+        run: make determinism
+
+  # -------------------------------------------------------------------------
+  # Release binaries. `nguo` does not exist yet; its absence is logged loudly
+  # by `make build-ui` and does not fail the job.
+  # -------------------------------------------------------------------------
+  build:
+    name: release binaries
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core-engine
+            ui
+          key: build
+      - run: make build-release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mguso-macos-arm64
+          path: core-engine/target/release/mguso
+          if-no-files-found: error
+
+  # -------------------------------------------------------------------------
+  # Performance. This measures something real today (`mguso bench` -> ms/step
+  # on the canonical drape scene) and records it as an artifact.
+  #
+  # NOT IMPLEMENTED: the UI frame-time budget gate
+  # (8.3 ms target / 16.6 ms ceiling). Those budgets are UI frame times and
+  # there is no UI, no canonical 50-piece project, and no stored baseline to
+  # compare against, so there is no honest threshold to assert. This job
+  # therefore reports and never fails on timing. Turn it into a gate when a
+  # baseline exists — see ui/docs/CI.md "Perf".
+  # -------------------------------------------------------------------------
+  perf:
+    name: perf (measure only, no threshold yet)
+    runs-on: macos-15
+    continue-on-error: true # advisory: a slow shared runner must not block a PR
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core-engine
+          key: gpu # share the gpu job's cache; same build
+      - run: make build-engine
+      - name: Solver throughput
+        run: make bench | tee bench.json
+      - name: Summary
+        run: |
+          {
+            echo "### Solver throughput (no budget enforced yet)"
+            echo '```json'
+            cat bench.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-macos-arm64
+          path: bench.json

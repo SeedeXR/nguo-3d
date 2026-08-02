@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Two cargo workspaces, neither nested in the other, so two `cargo` entries.
+#
+# wgpu and the renderers that must share its device (iced, iced_wgpu,
+# iced_winit, vello, egui, egui-wgpu) are IGNORED here on purpose: bumping any
+# one of them alone splits the wgpu major and breaks the single-device
+# invariant (ui/docs/DEVELOPING.md §4.1). That family gets bumped by hand, as a
+# set, with `make check-wgpu` green. Everything else is fair game.
+
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /core-engine
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: wgpu
+      - dependency-name: wgpu-*
+
+  - package-ecosystem: cargo
+    directory: /ui
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: wgpu
+      - dependency-name: wgpu-*
+      - dependency-name: iced*
+      - dependency-name: vello
+      - dependency-name: egui*
+      - dependency-name: winit
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

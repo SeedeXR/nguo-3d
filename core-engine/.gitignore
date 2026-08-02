@@ -1,0 +1,23 @@
+# Engine-local ignores only.
+#
+# Tree-wide rules (target/, .DS_Store, graphify-out/, *.rs.bk, Cargo.lock.orig,
+# editor scratch) live in the ROOT .gitignore and already apply here. Do not
+# restate them: two copies drift, and the copy you edit is never the one git read.
+
+# Regression / run artifacts.
+/artifacts
+/out
+*.npy
+*.bin.tmp
+
+# Do NOT ignore Cargo.lock — this is an application workspace, lockfile is committed.
+# (No parent rule ignores it today; this negation is a guard against one being added.)
+!Cargo.lock
+
+# Audit reports — local working artefacts, not part of the shipped repo.
+audit_reports/
+
+#golden_scenes
+ppf-cts-gauge/
+
+notes_to_human.md

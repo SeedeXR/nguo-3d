@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# nguo-3d UI workspace — the desktop application shell for the ppf-mguso cloth
+# engine. Creator: Seede XR. First dev: Alex Mkwizu <a.mkwizu@seedexr.com>.
+#
+# WGPU VERSION PIN (ui/docs/DEVELOPING.md §4.1 — the #1 integration hazard):
+# every renderer in this process MUST agree on ONE wgpu major, or they cannot
+# share a device. Verified against the crates.io sparse index 2026-08-01:
+#   iced_wgpu 0.14.0 -> wgpu ^27.0
+#   vello     0.7.0  -> wgpu ^27.0.1
+#   egui-wgpu 0.33.3 -> wgpu ^27.0.1
+# wgpu 27 is the ONLY major that unifies all three. core-engine is therefore
+# ported 30 -> 27 to join them on one device (landed and verified: both
+# lockfiles resolve wgpu 27.0.1). Do not bump one without the rest;
+# `make check-wgpu` (and CI) fail the build if more than one wgpu major ends up
+# in either lockfile.
+
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "GPL-2.0-or-later"
+authors = [
+    "Seede XR",
+    "Alex Mkwizu <a.mkwizu@seedexr.com>",
+]
+repository = "nguo-3d"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# --- internal (UI side) ---------------------------------------------------
+nguo-doc = { path = "crates/nguo-doc" }
+nguo-doc-commands = { path = "crates/nguo-doc-commands" }
+nguo-pattern = { path = "crates/nguo-pattern" }
+nguo-measure = { path = "crates/nguo-measure" }
+nguo-sewing = { path = "crates/nguo-sewing" }
+nguo-triangulate = { path = "crates/nguo-triangulate" }
+nguo-gpu = { path = "crates/nguo-gpu" }
+nguo-canvas = { path = "crates/nguo-canvas" }
+nguo-viewport3d = { path = "crates/nguo-viewport3d" }
+nguo-ui-theme = { path = "crates/nguo-ui-theme" }
+nguo-ui-widgets = { path = "crates/nguo-ui-widgets" }
+nguo-engine-bridge = { path = "crates/nguo-engine-bridge" }
+nguo-io = { path = "crates/nguo-io" }
+nguo-bridge-dcc = { path = "crates/nguo-bridge-dcc" }
+# 2D geometric constraint solver — FFI over vendored planegcs (LGPL-2.1-or-later,
+# third_party/planegcs/). See ui/docs/CONSTRAINTS.md.
+nguo-constraints = { path = "crates/nguo-constraints" }
+# Session 2: shell, splash, keymap, observability registry.
+nguo-splash = { path = "crates/nguo-splash" }
+nguo-keymap = { path = "crates/nguo-keymap" }
+nguo-registry = { path = "crates/nguo-registry" }
+
+# --- internal (engine side, path deps across workspaces) ------------------
+# Unified only once core-engine is on wgpu 27. Until then `nguo-engine-bridge`
+# uses the process bridge (mguso CLI) and these stay commented.
+engine-api = { path = "../core-engine/crates/engine-api" }
+engine-core = { path = "../core-engine/crates/engine-core" }
+engine-io = { path = "../core-engine/crates/engine-io" }
+
+# --- rendering stack (ALL pinned to wgpu 27, see header) ------------------
+wgpu = "27"
+iced = "0.14"
+iced_wgpu = "0.14"
+iced_winit = "0.14"
+vello = "0.7"
+# kurbo/peniko MUST match what vello re-exports, or `BezPath` becomes two
+# incompatible types at the pattern <-> canvas boundary and nothing composes.
+# Resolved chain (verified in ui/Cargo.lock): vello 0.7.0 -> peniko 0.6.1 ->
+# kurbo 0.13.1. Crates that already depend on vello should prefer
+# `vello::{kurbo, peniko}` over these entries; they exist for the UI-free
+# crates (nguo-pattern) that need curve maths without pulling a renderer in.
+kurbo = "0.13"
+peniko = "0.6"
+egui = "0.33"
+egui-wgpu = "0.33"
+winit = "0.30"
+bytemuck = { version = "1", features = ["derive"] }
+glam = { version = "0.30", features = ["bytemuck", "serde"] }
+
+# --- plumbing -------------------------------------------------------------
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+# `float_roundtrip` is REQUIRED, not an optimisation. serde_json's default float
+# parser is 1 ULP lossy: 413.50922910276347 reloads as 413.5092291027634, so a
+# saved project does not reopen to identical geometry. That breaks the
+# determinism contract (LICENSING.md / DEVELOPING.md) and was caught by a document
+# round-trip property test, not by review. Never remove this feature; cargo
+# features are additive, so a crate that omits it still gets it — but a crate
+# that pins its own `serde_json` without it reintroduces the bug locally.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+clap = { version = "4", features = ["derive"] }
+approx = "0.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+# The UI is unusable at opt-level 0 (Vello/wgpu shader compile + scene build).
+# Deps optimised, our crates left debuggable.
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3

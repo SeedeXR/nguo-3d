@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "engine-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Mesh & sequence I/O (OBJ, STL, glTF/GLB; USD/FBX/COLLADA later)"
+
+[dependencies]
+engine-api.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+gltf = { version = "1.4.1", default-features = false, features = ["import", "utils", "names"] }
+# roxmltree (MIT/Apache-2.0) — tiny read-only DOM parser for COLLADA (.dae) XML.
+# Only normal dep is memchr (already ubiquitous in the tree).
+roxmltree = "0.21"
+# fbxcel (MIT/Apache-2.0) — pure-Rust low-level FBX binary tree parser. Deps:
+# libflate (MIT) + log (MIT/Apache). The `tree` feature gives DOM node access.
+fbxcel = { version = "0.9", features = ["tree"] }
+serde_json.workspace = true
+glam.workspace = true
+
+[dev-dependencies]
+# `writer` feature (tests only) — builds a binary FBX fixture in-memory to parse.
+fbxcel = { version = "0.9", features = ["tree", "writer"] }

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset>
+    <up_axis>Y_UP</up_axis>
+  </asset>
+  <library_geometries>
+    <geometry id="Cloth-mesh" name="Cloth">
+      <mesh>
+        <source id="Cloth-positions">
+          <float_array id="Cloth-positions-array" count="18">0 0 0  1 0 0  2 0 0  0 1 0  1 1 0  2 1 0</float_array>
+          <technique_common>
+            <accessor source="#Cloth-positions-array" count="6" stride="3">
+              <param name="X" type="float"/>
+              <param name="Y" type="float"/>
+              <param name="Z" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <source id="Cloth-normals">
+          <float_array id="Cloth-normals-array" count="3">0 0 1</float_array>
+          <technique_common>
+            <accessor source="#Cloth-normals-array" count="1" stride="3"/>
+          </technique_common>
+        </source>
+        <vertices id="Cloth-vertices">
+          <input semantic="POSITION" source="#Cloth-positions"/>
+        </vertices>
+        <polylist count="2">
+          <input semantic="VERTEX" source="#Cloth-vertices" offset="0"/>
+          <input semantic="NORMAL" source="#Cloth-normals" offset="1"/>
+          <vcount>4 4</vcount>
+          <p>0 0 1 0 4 0 3 0   1 0 2 0 5 0 4 0</p>
+        </polylist>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <scene/>
+</COLLADA>

@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-bridge-dcc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Headless Blender / Unity interop: executable discovery, argv construction, output parsing, axis conversion"
+
+# Deliberately depends on NOTHING internal. The DCC bridge talks to other
+# processes over files and argv, so it needs neither engine-* (wgpu 30, not yet
+# ported) nor any UI crate, and `cargo test -p nguo-bridge-dcc` stays fast and
+# independent of the rest of the workspace.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

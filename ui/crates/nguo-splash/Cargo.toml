@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-splash"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Startup splash screen for nguo-3d: a window-free dismissal state machine plus its iced view."
+
+[dependencies]
+# `image` (not `image-without-codecs`) is required: iced pulls `image 0.25` with
+# `default-features = false`, which has no PNG decoder, and the artwork is a PNG.
+iced = { workspace = true, features = ["svg", "image"] }

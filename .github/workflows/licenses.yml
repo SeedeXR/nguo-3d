@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Licence enforcement — REQUIRED, blocking.
+#
+# nguo-3d is GPL-2.0-or-later. A dependency under an incompatible licence is
+# not a style problem, it is a distribution problem, so this gate blocks.
+# Allowed set (LICENSING.md): MIT / Apache-2.0 / BSD / MPL-2.0 / LGPL /
+# GPLv2-or-later / GPLv3. Rejected: GPL-2.0-only, non-commercial,
+# research-only, anything not on the list in deny.toml.
+#
+# Runs on ubuntu-latest: licence metadata is platform-independent and Linux
+# runners are ~10x cheaper in Actions minutes than macOS.
+
+name: Licenses
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: licenses-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: cargo-deny (both workspaces)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Prebuilt binary — no compile, a few seconds. Same tool version story
+      # as `brew install cargo-deny` locally.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      # `make licenses` runs, for each workspace:
+      #   cargo deny --manifest-path <ws>/Cargo.toml --config deny.toml \
+      #              check licenses bans sources
+      # `bans` is where the wgpu 27 pin is enforced a second time, and
+      # `sources` blocks git dependencies sneaking in.
+      - name: cargo-deny check licenses bans sources
+        run: make licenses

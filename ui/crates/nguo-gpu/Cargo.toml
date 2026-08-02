@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# The egui debug overlay plumbing.
+debug-overlay = ["dep:egui", "dep:egui-wgpu"]
+
+[dependencies]
+# `iced` re-exports the `iced_wgpu` primitive traits through
+# `iced::widget::shader`, so we do not depend on `iced_wgpu` directly — one
+# fewer version to keep in step.
+iced = { workspace = true }
+wgpu = { workspace = true }
+# `kurbo`/`peniko` come from `vello::{kurbo, peniko}` so they cannot drift.
+vello = { workspace = true }
+tracing = { workspace = true }
+# `handoff` only: the drape payload struct, and blocking on `request_device`
+# for the engine device. Both already resolve in ui/Cargo.lock (bytemuck
+# 1.25.2, pollster 0.4.0) — no new download.
+bytemuck = { workspace = true }
+pollster = "0.4"
+# The epoch/generation scheme is the bridge's; the handoff reuses `Epoch`
+# rather than inventing a second one that would drift.
+nguo-engine-bridge = { workspace = true }
+
+egui = { workspace = true, optional = true }
+egui-wgpu = { workspace = true, optional = true }

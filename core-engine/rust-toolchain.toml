@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Pin the toolchain so every dev + CI runner builds identically (determinism
+# starts with the compiler). Bump deliberately, not incidentally.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+targets = []

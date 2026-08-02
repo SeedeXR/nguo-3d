@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-engine-bridge"
+description = "Async bridge from the nguo-3d app to the ppf-mguso cloth solver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Not in [workspace.dependencies] (that table is renderer-focused); the bridge
+# is the only crate that needs an async runtime today.
+tokio = { version = "1", features = ["rt", "sync", "macros"] }
+tempfile = "3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

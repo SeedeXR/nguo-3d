@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-measure"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Units, length formatting/parsing and the numeric-field expression evaluator."
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"

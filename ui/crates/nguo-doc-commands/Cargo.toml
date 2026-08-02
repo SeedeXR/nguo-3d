@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-doc-commands"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Command pattern, transactions, gesture coalescing and undo/redo over nguo-doc."
+
+[dependencies]
+kurbo = { workspace = true }
+nguo-doc = { workspace = true }
+nguo-pattern = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+nguo-measure = { workspace = true }
+proptest = "1"
+serde_json = { workspace = true, features = ["float_roundtrip"] }

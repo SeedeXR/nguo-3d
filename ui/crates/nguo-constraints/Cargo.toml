@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-constraints"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "2D geometric constraint solver for nguo-3d patterns (safe Rust over FreeCAD planegcs)"
+
+[dependencies]
+thiserror = { workspace = true }
+
+[build-dependencies]
+cc = { version = "1", features = ["parallel"] }

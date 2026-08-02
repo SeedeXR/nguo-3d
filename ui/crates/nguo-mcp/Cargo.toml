@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-mcp"
+description = "MCP server exposing the nguo-3d cloth suite to agentic coding tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+# rmcp 3.1.0 declares rust-version = "1.88", above the workspace's 1.85 floor.
+# Overridden here only; the workspace table is untouched.
+rust-version = "1.88"
+
+[lib]
+name = "nguo_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nguo-mcp"
+path = "src/main.rs"
+
+[dependencies]
+nguo-cli = { path = "../nguo-cli" }
+rmcp = { version = "3.1.0", features = ["server", "transport-io"] }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+
+[dev-dependencies]
+clap = { workspace = true }
+rmcp = { version = "3.1.0", features = ["server", "client", "transport-io"] }

@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# The egui debug overlay (profiler and inspectors, debug builds). Forwarded to
+# `nguo-registry` so `FEATURES["ui.debug_overlay"].enabled` reports whether the
+# overlay was actually compiled in — this crate is the only place that knows.
+debug-overlay = ["dep:nguo-app-debug", "nguo-registry/debug-overlay"]
+
+[dependencies]
+nguo-gpu = { workspace = true }
+nguo-canvas = { workspace = true }
+nguo-viewport3d = { workspace = true }
+nguo-doc = { workspace = true }
+nguo-keymap = { workspace = true }
+nguo-registry = { workspace = true }
+nguo-splash = { workspace = true }
+nguo-ui-theme = { workspace = true }
+nguo-ui-widgets = { workspace = true }
+# Not in [workspace.dependencies] — `nguo-app` and `nguo-app-debug` are missing
+# from that table. Path dep until it is added (reported to the orchestrator).
+nguo-app-debug = { path = "../nguo-app-debug", optional = true }
+
+iced = { workspace = true }
+vello = { workspace = true }
+glam = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+thiserror = { workspace = true }
+pollster = "0.4"

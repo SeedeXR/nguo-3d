@@ -1,0 +1,31 @@
+ppf-mguso-solver
+Copyright (C) 2026 ppf-mguso-solver contributors
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+--------------------------------------------------------------------------
+NOTE (must resolve before public release): drop the verbatim text of the
+GNU GPL v2 into LICENSES/GPL-2.0-or-later.txt. It is intentionally NOT
+reproduced from memory here — an inexact copy of a legal text is worse
+than an explicit pointer. Fetch the canonical text from
+https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+
+Licensing rationale (see memory/engine.md §0.1): the upstream
+ppf-contact-solver is Apache-2.0, which is compatible with GPLv3 but not
+GPLv2-only. Conveying the combined work under "GPL v2-or-later" lets it be
+distributed under GPLv3 terms, making the Apache-2.0 (ppf) and Apache/MIT
+(wgpu) code legally combinable. Every third-party dependency must be one of
+{MIT, Apache-2.0, BSD, MPL-2.0, GPLv2+, GPLv3}. Reject GPLv2-only,
+non-commercial, or research-only licenses.
+--------------------------------------------------------------------------

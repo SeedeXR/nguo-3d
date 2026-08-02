@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "engine-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Headless runner: simulate scenes, GPU info, benchmark, regression compare"
+
+[[bin]]
+name = "mguso"
+path = "src/main.rs"
+
+[dependencies]
+engine-core.workspace = true
+engine-api.workspace = true
+engine-io.workspace = true
+engine-gpu.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+glam.workspace = true

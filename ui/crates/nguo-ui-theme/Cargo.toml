@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-ui-theme"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Design tokens (colour, spacing, type, radii, elevation) for the nguo-3d UI."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

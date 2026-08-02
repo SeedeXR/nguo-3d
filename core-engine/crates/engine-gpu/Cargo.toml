@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "engine-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "wgpu device bring-up + compute dispatch (Metal/Vulkan/DX12). Home of the implicit-solver WGSL kernels."
+
+[dependencies]
+engine-core.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+bytemuck.workspace = true
+glam.workspace = true
+tracing.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+//! engine-api — authoring surface for ppf-mguso-solver (replaces the Python
+//! frontend). Build a [`Scene`] of [`Object`]s with [`Material`]s and
+//! [`SolverConfig`], then `scene.build()` to get a runnable `engine_core::Solver`.
+
+pub mod auto_drape;
+pub mod material;
+pub mod params;
+pub mod rig;
+pub mod scene;
+
+pub use auto_drape::{auto_drape, Aabb, DrapePreset};
+pub use material::{FabricPreset, Material};
+pub use params::{Barrier, Model, SolverConfig};
+pub use rig::{AnimationChannel, AnimationClip, AnimationPath, Joint, Skin};
+pub use scene::{ColliderSpec, Object, Scene};

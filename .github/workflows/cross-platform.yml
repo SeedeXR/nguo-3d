@@ -1,0 +1,136 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Secondary CI — Linux/Vulkan and Windows/DX12.
+#
+# STATUS: ADVISORY. Every job here is `continue-on-error: true`, so a red tick
+# never blocks a merge. That is deliberate: Windows is the least-mature wgpu
+# path — the reason it ships last but is tested continuously, so breakage
+# stays contained. The point right now is early
+# warning, not enforcement.
+#
+# TO MAKE THEM BLOCKING: delete the `continue-on-error` lines and add the jobs
+# to the branch protection required-checks list. Do that for Linux at
+# milestone M2 and for Windows at M4.
+#
+# The only REQUIRED workflows today are ci.yml (macOS) and licenses.yml.
+
+name: Cross-platform (advisory)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: xplat-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  linux:
+    name: Linux / Vulkan (lavapipe)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      # Package names verified against the Ubuntu noble package index, not
+      # guessed:
+      #   mesa-vulkan-drivers ships /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      #     — that is lavapipe, Mesa's LLVM software Vulkan rasteriser.
+      #   libvulkan1  = the loader.  vulkan-tools = vulkaninfo, for diagnostics.
+      # (There is no `vulkan-swiftshader` package in Ubuntu; SwiftShader is a
+      # Google project distributed as source/prebuilt blobs. lavapipe is the
+      # apt-installable software Vulkan on Ubuntu.)
+      #
+      # The remaining packages are the winit/iced/rfd system deps the UI
+      # workspace will need as soon as it has a window.
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libvulkan1 vulkan-tools \
+            libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev \
+            libxrandr-dev libxi-dev libgl1-mesa-dev pkg-config
+
+      - name: Vulkan diagnostics
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: vulkaninfo --summary || echo "vulkaninfo failed — see the smoke test below"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core-engine
+            ui
+          key: linux
+
+      - run: make fmt
+      - run: make check-wgpu
+      - run: make clippy
+      - run: make test
+      - run: make build-engine
+
+      # Force lavapipe so the result does not depend on whatever the hosted
+      # runner happens to expose. Software Vulkan IS the fallback here — there
+      # is no GPU on ubuntu-latest — so unlike macOS this is not hardware
+      # validation, it is "the Vulkan code path compiles, links and runs".
+      - name: Vulkan smoke test (software rasteriser)
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: make gpu-smoke EXPECT_BACKEND=Vulkan
+
+      - name: 10x determinism gate (Vulkan)
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: make determinism
+
+  windows:
+    name: Windows / DX12
+    runs-on: windows-latest
+    continue-on-error: true
+    # The root Makefile is POSIX shell; bash ships with the Windows runner
+    # (Git for Windows), so the same targets work unmodified.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      # GNU Make is NOT preinstalled on the windows-latest image (checked
+      # against images/windows/Windows2022-Readme.md — jq is there, make is
+      # not), and the whole point of this repo's CI is that it runs the same
+      # `make` targets everywhere.
+      - name: Install GNU Make
+        run: choco install make --no-progress -y
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core-engine
+            ui
+          key: windows
+
+      - run: make fmt
+      - run: make check-wgpu
+      - run: make clippy
+      - run: make test
+      - run: make build-engine
+
+      # windows-latest has no discrete GPU; wgpu's DX12 backend will select
+      # "Microsoft Basic Render Driver" (WARP), the OS software DX12 device.
+      # That still exercises the real DX12 code path — HLSL generation, root
+      # signatures, descriptor heaps — which is what we want caught early.
+      - name: DX12 smoke test
+        run: make gpu-smoke EXPECT_BACKEND=Dx12
+
+      - name: 10x determinism gate (DX12)
+        run: make determinism

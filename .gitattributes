@@ -1,0 +1,102 @@
+# nguo-3d — line endings, binary marking, and Git LFS.
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+# ---------------------------------------------------------------------------
+# 1. Text normalisation
+# ---------------------------------------------------------------------------
+# Everything git detects as text is stored LF and checked out LF, on every
+# platform. Without this a Windows contributor's editor turns a .wgsl shader or
+# a golden .json fixture into CRLF, and the byte-exact regression tests fail for
+# reasons that have nothing to do with the change. Verified 2026-08-02: no file
+# in the tree currently contains a CR, so this is a no-op today and a guard
+# from here on.
+* text=auto eol=lf
+
+# Explicit, so detection never has to guess on our own source.
+*.rs      text eol=lf
+*.wgsl    text eol=lf
+*.toml    text eol=lf
+*.md      text eol=lf
+*.json    text eol=lf
+*.py      text eol=lf
+*.sh      text eol=lf
+*.cpp     text eol=lf
+*.hpp     text eol=lf
+*.h       text eol=lf
+*.svg     text eol=lf
+*.yml     text eol=lf
+# Wavefront .obj, COLLADA .dae and USD .usda are ASCII formats — text, not binary.
+*.obj     text eol=lf
+*.dae     text eol=lf
+*.usda    text eol=lf
+
+# ---------------------------------------------------------------------------
+# 2. Binary — never diffed, never EOL-mangled
+# ---------------------------------------------------------------------------
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.ico     binary
+*.icns    binary
+*.ttf     binary
+*.otf     binary
+*.woff    binary
+*.woff2   binary
+*.glb     binary
+*.npy     binary
+*.pdf     binary
+
+# ---------------------------------------------------------------------------
+# 3. Git LFS — prospective
+# ---------------------------------------------------------------------------
+# None of these extensions exist in the committable tree today (2026-08-02:
+# 712 files, 11.7 MB, largest is 1.6 MB). Every real asset of these kinds
+# currently lives under samples/ or instructions/, which the root .gitignore
+# excludes. These rules exist so that the first time a garment source, an HDRI
+# or a UI-reference capture *is* committed, it lands in LFS instead of being
+# baked into history where it cannot be removed.
+#
+# Deliberately NOT listed: *.png, *.ttf, *.svg, *.glb, *.obj. See §4.
+*.blend   filter=lfs diff=lfs merge=lfs -text
+*.blend1  filter=lfs diff=lfs merge=lfs -text
+*.fbx     filter=lfs diff=lfs merge=lfs -text
+*.zprj    filter=lfs diff=lfs merge=lfs -text
+*.exr     filter=lfs diff=lfs merge=lfs -text
+*.hdr     filter=lfs diff=lfs merge=lfs -text
+*.rar     filter=lfs diff=lfs merge=lfs -text
+*.zip     filter=lfs diff=lfs merge=lfs -text
+*.7z      filter=lfs diff=lfs merge=lfs -text
+*.mp4     filter=lfs diff=lfs merge=lfs -text
+*.mov     filter=lfs diff=lfs merge=lfs -text
+*.wav     filter=lfs diff=lfs merge=lfs -text
+
+# ---------------------------------------------------------------------------
+# 4. Build-time embedded assets — MUST NEVER GO TO LFS
+# ---------------------------------------------------------------------------
+# These are read by `include_bytes!` / `include_str!` at COMPILE time. The Rust
+# compiler reads whatever bytes are on disk; it has no idea what LFS is. On a
+# clone made without git-lfs installed, an LFS-tracked file checks out as a
+# ~130-byte pointer text file ("version https://git-lfs.github.com/spec/v1 ...").
+# The build would then succeed and embed the pointer text as the splash PNG /
+# the Inter font / an icon — a silently broken binary rather than a build error.
+# That failure mode is far worse than a 1.6 MB blob in history.
+#
+# `-filter -diff -merge` pins them out of LFS even if a broad rule is added above.
+#
+# Sites (verified 2026-08-02):
+#   ui/crates/nguo-splash/src/lib.rs:58,59,79   splash PNG, brand SVG, Inter TTF
+#   ui/crates/nguo-ui-widgets/src/icon.rs:103   include_bytes!(concat!("../../../assets/icons/", $file, ".svg"))
+#   ui/crates/nguo-viewport3d/src/renderer.rs, ui/crates/nguo-gpu/src/blit.rs,
+#   core-engine/crates/engine-gpu/src/*.rs      include_str! on *.wgsl (text, never LFS)
+ui/assets/images/splash_screen_image.png -filter -diff -merge binary
+ui/assets/fonts/Inter-Regular.ttf        -filter -diff -merge binary
+ui/assets/icons/**                       -filter -diff -merge text eol=lf
+ui/assets/brand-icon/**                  -filter -diff -merge text eol=lf
+
+# ---------------------------------------------------------------------------
+# 5. GitHub language statistics
+# ---------------------------------------------------------------------------
+# third_party/ is 363 of the 712 committable files (mostly Eigen headers), kept
+# in-tree to satisfy the LGPL source-availability obligation for planegcs.
+# Vendored, not ours — exclude it from the language bar and from search.
+third_party/** linguist-vendored

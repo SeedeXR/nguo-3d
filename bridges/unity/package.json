@@ -1,0 +1,11 @@
+{
+  "name": "com.seedexr.nguo-bridge",
+  "displayName": "nguo-3d Bridge",
+  "version": "0.0.1",
+  "unity": "2022.3",
+  "description": "Import garments draped by the nguo-3d cloth engine into Unity (single frame or animated sequence), and export Unity meshes back as nguo-3d colliders. Editor-only; drivable headlessly with -batchmode -executeMethod.",
+  "author": { "name": "Seede XR" },
+  "license": "GPL-2.0-or-later",
+  "keywords": ["cloth", "garment", "simulation", "interop", "gltf"],
+  "dependencies": {}
+}

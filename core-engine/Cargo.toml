@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# ppf-mguso-solver — cross-platform (Metal/Vulkan/DX12) Rust + wgpu cloth/shell/rod
+# contact solver. Pure engine, no UI. Ported from ZOZO st-tech/ppf-contact-solver
+# (Apache-2.0); conveyed under GPL-2.0-or-later. See LICENSES/.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/engine-core",
+    "crates/engine-gpu",
+    "crates/engine-api",
+    "crates/engine-io",
+    "crates/engine-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "GPL-2.0-or-later"
+authors = ["ppf-mguso-solver contributors"]
+repository = "ppf-mguso-solver"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Internal crates
+engine-core = { path = "crates/engine-core" }
+engine-gpu = { path = "crates/engine-gpu" }
+engine-api = { path = "crates/engine-api" }
+engine-io = { path = "crates/engine-io" }
+
+# GPU — cross-platform, picks Metal/Vulkan/DX12 at runtime.
+wgpu = "27"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+
+# Math. glam is bytemuck- and serde-friendly and maps cleanly to WGSL vec/mat.
+glam = { version = "0.30", features = ["bytemuck", "serde"] }
+
+# Structured logging (proper logs + process observability).
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# Errors
+anyhow = "1"
+thiserror = "2"
+
+# Serialization (scene files, params, regression manifests)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Test tolerances
+approx = "0.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.bench]
+lto = "thin"

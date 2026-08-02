@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-keymap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Data-driven, remappable, context-scoped keyboard shortcut map for nguo-3d."
+
+# NOTE: deliberately NOT a dependant of nguo-doc-commands. See lib.rs "Why a
+# string CommandId". Two deps, both already in the workspace.
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

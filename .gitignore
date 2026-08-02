@@ -1,0 +1,44 @@
+# Cargo build output for both workspaces.
+target/
+
+# rustfmt backups and merge-tool leftovers. Tree-wide: both workspaces are Rust.
+**/*.rs.bk
+Cargo.lock.orig
+
+# Editor scratch.
+*.swp
+.vscode/
+.idea/
+
+# Scratch from `make determinism` / `make gpu-smoke` (cleaned on success,
+# left behind on failure so you can inspect the diverging runs).
+.determinism-tmp/
+.determinism-tmp.gpu.json
+bench.json
+
+.DS_Store
+
+# Python bytecode from the Blender bridge (bridges/blender/**).
+__pycache__/
+*.py[cod]
+
+# Knowledge graphs are DERIVED artefacts, rebuildable via tools/graphify.sh.
+# See memory/GRAPHIFY.md — the recipe is versioned, the 10 MB output is not.
+graphify-out/
+
+# Vendored third-party sources (third_party/) are deliberately NOT ignored:
+# the LGPL obligation for planegcs is satisfied by shipping its sources.
+
+samples/
+instructions/
+memory/
+
+# Maintainer working notes. Ignored for TWO reasons, the second load-bearing:
+#   1. consistency — `core-engine/notes_to_human.md` is already ignored, and the
+#      root copy cross-references it, so committing one and not the other ships
+#      a dead link;
+#   2. it records live infrastructure access (a root SSH host, port and key
+#      path for the GPU box). Publishing a `root@host:port` on a public repo
+#      invites brute-force attempts even though the key itself is never in the
+#      tree. If this file is ever un-ignored, REDACT §1.3 first.
+notes_to_human.md

@@ -1,0 +1,119 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# cargo-deny configuration — shared by BOTH workspaces (core-engine/ and ui/).
+# Run it as:
+#   cargo deny --manifest-path core-engine/Cargo.toml --config deny.toml check
+#   cargo deny --manifest-path ui/Cargo.toml          --config deny.toml check
+# or just `make licenses`.
+#
+# This is the *enforcement* half of the licence policy (LICENSING.md).
+# `core-engine/about.toml` is the *attribution* half (cargo-about, generates
+# LICENSES/THIRD_PARTY.md). The two allow-lists are kept identical, and
+# `make licenses-sync` now *checks* that rather than trusting this comment —
+# they had already drifted twice before the check existed. If you add a licence
+# here, add it to core-engine/about.toml too, and vice versa.
+#
+# This file is the machine-checked source of truth. LICENSING.md documents the
+# same list in prose and follows it.
+
+[graph]
+# Only evaluate targets we actually ship on. Keeps wasm/android/ios noise out.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+all-features = false
+
+# ---------------------------------------------------------------------------
+# LICENCES — the hard constraint.
+# THE RULE: every dependency must permit commercial use. Copyleft does NOT
+# fail that test — GPL/LGPL/MPL/AGPL all permit commercial use, they constrain
+# distribution terms, not whether money changes hands. What fails is the
+# non-commercial family: CC BY-NC*, SSPL, BUSL/Business Source, Elastic
+# License, "academic/research use only", JSON.org's "Good, not Evil".
+#
+# Allowed: MIT / Apache-2.0 / BSD / MPL-2.0 / LGPL / GPLv2+ / GPLv3 / OFL.
+# Rejected: GPL-2.0-only, non-commercial, research-only, anything unlisted.
+#
+# Note GPL-2.0 vs GPL-2.0-or-later: SPDX `GPL-2.0-only` is NOT allowed (it is
+# incompatible with our GPL-2.0-or-later tree upgrading to GPLv3). Bare
+# `GPL-2.0` is the deprecated SPDX id that cargo-deny normalises to
+# `GPL-2.0-only`, so it is likewise absent. Only the `-or-later` forms pass.
+#
+# `BSL-1.0` below is the **Boost** Software License — permissive, OSI-approved.
+# It is NOT the Business Source License (BUSL-1.1), which is source-available,
+# non-commercial-until-the-change-date, and rejected.
+# ---------------------------------------------------------------------------
+[licenses]
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0-or-later",
+    "GPL-2.0-or-later",
+    "GPL-3.0-or-later",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "Unlicense",
+    "BSL-1.0",
+    "OFL-1.1",
+]
+
+# A crate whose licence cargo-deny cannot infer from metadata + files scores
+# below this and fails. Do not lower it to make a crate pass — add an explicit
+# `[[licenses.clarify]]` entry instead, with the evidence.
+confidence-threshold = 0.93
+
+# Ubuntu-font-1.0 is scoped to the ONE crate that ships an Ubuntu-family font
+# binary, rather than globally allowed. It permits commercial use and
+# redistribution (so it passes the project's rule), but unlike everything in
+# `allow` above its GPL compatibility is not clean — its rename-on-modify
+# clause is why the FSF does not list it as GPL-compatible. It only reaches a
+# shipped binary via `--features debug-overlay`, so the blast radius is the
+# developer overlay, not the product. If that ever changes, drop egui's
+# `default_fonts` feature and supply Inter instead.
+[[licenses.exceptions]]
+name = "epaint_default_fonts"
+allow = ["Ubuntu-font-1.0"]
+
+# ---------------------------------------------------------------------------
+# BANS — the wgpu single-version rule lives here as a second line of defence.
+# `make check-wgpu` is the primary, human-readable check (it names the crates);
+# this catches it even if someone bypasses the Makefile.
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "allow" # too noisy across the whole graph to be useful yet
+deny = [
+    # One wgpu major, one wgpu::Device, for iced +
+    # Vello + egui + the 3D viewport. Anything not-27 is a device split.
+    { name = "wgpu", version = "<27.0.0" },
+    { name = "wgpu", version = ">=28.0.0" },
+]
+
+# ---------------------------------------------------------------------------
+# SOURCES — crates.io and our own paths only. No git deps sneaking in.
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# ---------------------------------------------------------------------------
+# ADVISORIES — RUSTSEC. Advisory-only for now (the DB moves faster than we do);
+# the licences job is the blocking one.
+# ---------------------------------------------------------------------------
+[advisories]
+yanked = "warn"
+ignore = []

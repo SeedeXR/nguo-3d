@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Blender 4.2+ extension manifest. Field set cross-checked against two real
+# manifests on this machine: ClothDrop Reborn 2.0.3 (the structural reference,
+# GPL-3.0-or-later) and the ZOZO ppf_contact_solver extension installed under
+# Blender 5.2's extensions directory.
+#
+# `blender --command extension validate <dir>` is the gate.
+
+schema_version = "1.0.0"
+
+id = "nguo_bridge"
+version = "0.0.1"
+name = "nguo-3d Bridge"
+tagline = "Drape garments with the nguo-3d cloth engine, in Blender"
+maintainer = "Alex Mkwizu <a.mkwizu@seedexr.com>"
+type = "add-on"
+
+website = "https://github.com/seedexr/nguo-3d"
+tags = ["Physics", "Import-Export"]
+
+blender_version_min = "4.2.0"
+
+# GPL-3.0-or-later, not the GPL-2.0-or-later of the nguo-3d Rust tree: this
+# add-on's structure derives from ClothDrop Reborn (GPL-3.0-or-later).
+license = ["SPDX:GPL-3.0-or-later"]
+
+# No wheels, no bundled binaries: the bridge shells out to the nguo/mguso CLI
+# and talks to it over files.

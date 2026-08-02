@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# cargo-about configuration for third-party license attribution.
+#
+# This is the *attribution* half of the licence policy. `deny.toml` at the repo
+# root is the *enforcement* half and is the machine-checked source of truth.
+#
+# The `accepted` list below MUST be byte-for-byte the same set as
+# `deny.toml`'s `[licenses] allow`. `make licenses-sync` checks it — the two
+# lists had silently drifted (this file used to accept bare `GPL-2.0`, which
+# SPDX normalises to `GPL-2.0-only`, the exact id deny.toml forbids because it
+# blocks the GPLv3 upgrade path; and it omitted `LGPL-2.1-or-later`, the
+# licence `third_party/planegcs` is vendored under).
+#
+# THE RULE: every dependency must permit commercial use. Copyleft passes that
+# test — GPL/LGPL/MPL constrain distribution terms, not commerce. The
+# non-commercial family (CC BY-NC*, SSPL, BUSL, Elastic, research-only) fails
+# it. See ../LICENSING.md (repo root).
+#
+# `BSL-1.0` is the Boost Software License (permissive), NOT Business Source.
+accepted = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0-or-later",
+    "GPL-2.0-or-later",
+    "GPL-3.0-or-later",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "Unlicense",
+    "BSL-1.0",
+    "OFL-1.1",
+]
+
+# Scoped exactly as in deny.toml's [[licenses.exceptions]] — see the rationale
+# there. Ubuntu-font-1.0 permits commercial use but is not cleanly
+# GPL-compatible, so it is allowed for this one crate only.
+[epaint_default_fonts]
+accepted = ["Ubuntu-font-1.0"]
+
+# Private/workspace crates are not third parties — skip them.
+[workspace]
+ignore-private-crates = true

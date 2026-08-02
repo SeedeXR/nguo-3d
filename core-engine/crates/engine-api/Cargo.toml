@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "engine-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Authoring API: scene, materials, and solver params (replaces the Python frontend)"
+
+[dependencies]
+engine-core.workspace = true
+glam.workspace = true
+serde.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+# Integration tests drive the implicit solver directly (they need `CgCpu`), and a
+# crate's regular [dependencies] are not in scope for tests/.
+engine-core.workspace = true

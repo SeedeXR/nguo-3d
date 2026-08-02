@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-ui-widgets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Reusable iced widgets (docking, panels, numeric fields, tree, toolbar) for nguo-3d."
+
+[dependencies]
+nguo-ui-theme = { workspace = true }
+iced = { workspace = true, features = ["svg", "advanced"] }
