@@ -31,7 +31,7 @@ engine-io = { path = "crates/engine-io" }
 
 # GPU — cross-platform, picks Metal/Vulkan/DX12 at runtime.
 wgpu = "27"
-pollster = "0.4"
+pollster = "1.0"
 bytemuck = { version = "1", features = ["derive"] }
 
 # Math. glam is bytemuck- and serde-friendly and maps cleanly to WGSL vec/mat.
