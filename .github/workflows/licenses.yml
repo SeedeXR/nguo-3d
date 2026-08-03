@@ -27,22 +27,35 @@ permissions:
   contents: read
 
 jobs:
-  cargo-deny:
-    name: cargo-deny (both workspaces)
+  licenses:
+    name: cargo-deny + attribution (both workspaces)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # Prebuilt binary — no compile, a few seconds. Same tool version story
-      # as `brew install cargo-deny` locally.
+      # Prebuilt binaries — no compile, a few seconds. Same tool version story
+      # as `brew install cargo-deny cargo-about` locally.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          # cargo-about is version-pinned on purpose: attribution-check diffs
+          # its output byte-for-byte, so a tool upgrade that reflows the
+          # template would fail CI on an unrelated PR. Bump it deliberately,
+          # with `make attribution` in the same commit. 0.9.1 is what the dev
+          # machine has (`cargo about --version`).
+          tool: cargo-deny,cargo-about@0.9.1
 
-      # `make licenses` runs, for each workspace:
-      #   cargo deny --manifest-path <ws>/Cargo.toml --config deny.toml \
-      #              check licenses bans sources
-      # `bans` is where the wgpu 27 pin is enforced a second time, and
-      # `sources` blocks git dependencies sneaking in.
-      - name: cargo-deny check licenses bans sources
+      # `make licenses` = licenses-sync + attribution-check + cargo-deny:
+      #   * licenses-sync     deny.toml / core-engine/about.toml / ui/about.toml
+      #                       (and the two about.hbs) hold the same allow-list
+      #   * attribution-check regenerates <ws>/LICENSES/THIRD_PARTY.md into a
+      #                       temp dir and diffs — a stale attribution file
+      #                       fails the build instead of sitting there quietly.
+      #                       about.toml pins the same five target triples as
+      #                       deny.toml, so the output is identical on this
+      #                       runner and on a developer's macOS box.
+      #   * cargo deny --manifest-path <ws>/Cargo.toml --config deny.toml \
+      #                check licenses bans sources
+      #     `bans` is where the wgpu 27 pin is enforced a second time, and
+      #     `sources` blocks git dependencies sneaking in.
+      - name: licence allow-list, bans, sources, attribution freshness
         run: make licenses

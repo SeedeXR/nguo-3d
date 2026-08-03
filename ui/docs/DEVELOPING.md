@@ -65,7 +65,7 @@ cd ../core-engine && cargo run -p engine-cli -- gpu-info    # confirm a real GPU
 
 ## 3. The crate map
 
-19 crates in `ui/crates`. What each one owns:
+20 crates in `ui/crates`. What each one owns:
 
 **Document and model** — no GPU, no UI framework, fast tests.
 
@@ -76,6 +76,7 @@ cd ../core-engine && cargo run -p engine-cli -- gpu-info    # confirm a real GPU
 | `nguo-pattern` | Pattern geometry: stable entity ids, the vector network, seam-allowance offset. |
 | `nguo-measure` | Units, length parse/format, and the numeric-field expression evaluator (`waist/4 + 1cm`). |
 | `nguo-constraints` | The 2D geometric constraint solver — safe Rust over FreeCAD's `planegcs`. |
+| `nguo-avatar` | The avatar bundle as typed data: the two-body catalogue, the four geometry tiers, path resolution, mesh loading, the skin library (Monk tone → linear `baseColorFactor`), and the bundle's measured girths converted to mm. It does **not** measure meshes — see [`AVATARS.md`](AVATARS.md) §6. |
 
 **Rendering and GPU.**
 
@@ -196,6 +197,13 @@ not implemented yet** — the bridge currently passes scene JSON through to
 `mguso` untouched. Do not add a second mm↔m conversion anywhere upstream of it;
 add the one at the boundary.
 
+**The avatar is the exception that proves the rule.** `assets/avatars/` is
+authored in **metres**, i.e. already solver units, so the body → collision
+proxy → `Scene` path converts **nothing** — converting there would be the bug.
+`nguo_avatar::Measurements::from_avatar` converts to mm exactly once, on its way
+out of the crate; the canvas ghost's `MM_PER_M` composes with the zoom rather
+than converting a second time. See [`AVATARS.md`](AVATARS.md) §6.
+
 ### 4.6 Determinism is a feature
 
 No wall-clock reads, no RNG, no unordered atomics in anything that affects a
@@ -238,6 +246,32 @@ cargo test -p nguo-gpu --release --test handoff_bench -- --ignored --nocapture
 cargo test -p nguo-bridge-dcc --test dcc_installed -- --ignored
 ```
 
+A third kind of gating: **the avatar suites are bundle-gated.** With no
+`assets/avatars/` — 227 MB behind git-LFS — they print a skip notice on stderr
+and **pass**, which is right for a laptop and wrong for a gate. 13 tests are
+behind that gate: 8 in `nguo-avatar/tests/bundle.rs` and 5 (1 `#[ignore]`
+benchmark) in `core-engine`'s `engine-api/tests/avatar_bundle.rs`. Each one that
+runs asserts a **floor** — the tier vertex/triangle counts, all 10 tones, all 7
+shared skin maps — so it cannot pass vacuously with the bundle present.
+
+```sh
+make test-avatars                                    # THE GATE: a skip is a FAILURE
+make avatar-bundle                                   # is the bundle here? never fails
+cargo test -p nguo-avatar                            # with the bundle
+NGUO_AVATAR_BUNDLE=/nope cargo test -p nguo-avatar   # exercise the skip path
+```
+
+`make test` depends on `make avatar-bundle`, so a bundle-less run says
+`ABSENT` at the top of its log rather than hiding the skips among ~800 test
+lines. `make test-avatars` is what asserts the coverage: it refuses to run
+without a bundle and sets `MGUSO_REQUIRE_AVATAR_BUNDLE=1`, `engine-api`'s own
+switch that turns a skip into a failure. **The UI suite has no equivalent
+in-crate switch** — the Makefile's presence check stands in for it. That gap, and
+`nguo-app`'s test gate swallowing *every* `AvatarError` rather than only a
+missing bundle, are tracked findings, not designs. CI runs `test-avatars` in a
+dedicated job because `actions/checkout` does not fetch LFS by default; see
+[`CI.md`](CI.md) §8b.
+
 The rule the whole tree is held to: **a change that has not been run is a
 draft.** Non-trivial logic ships with the smallest check that fails if the logic
 breaks.
@@ -272,12 +306,18 @@ the only reason local and CI cannot drift. If you change a gate, change it in
 the `Makefile`. `ui/docs/CI.md` records which gates have actually executed and
 which have never run.
 
-Two more targets worth knowing:
+Three more targets worth knowing:
 
 ```sh
 make determinism   # runs one scene 10x, requires byte-identical output
 make bench         # solver throughput on the canonical scene, JSON on stdout
+make test-avatars  # the avatar suites with skips turned into FAILURES
 ```
+
+`test-avatars` is **not** part of `make ci`, on purpose: the avatar bundle is
+227 MB behind git-LFS and `make ci` has to stay runnable on a clone made without
+LFS. Run it whenever you touch the avatar path. CI runs it in a dedicated job
+([`CI.md`](CI.md) §8b).
 
 Licensing rule, non-negotiable: put
 `SPDX-License-Identifier: GPL-2.0-or-later` on the first line of every new
@@ -297,6 +337,7 @@ gate.
 | [`GPU_HANDOFF.md`](GPU_HANDOFF.md) | Two devices, one adapter, and the measured cost of the seam |
 | [`AGENTIC.md`](AGENTIC.md) | Driving the application from a script, the CLI, or an agent |
 | [`INTEROP.md`](INTEROP.md) | Blender and Unity round trips, with the axis conventions written down |
+| [`AVATARS.md`](AVATARS.md) | The body bundle: the four tiers, loading, the skin-tone trap, **why a full-body collision proxy costs 9.4 s/step**, and the licence position |
 | [`OBSERVABILITY.md`](OBSERVABILITY.md) | The feature inventory, the process registry, logs and errors |
 | [`SPLASH.md`](SPLASH.md) | The splash screen and its dismissal state machine |
 | [`CI.md`](CI.md) | What the gates are, and which of them have actually run |

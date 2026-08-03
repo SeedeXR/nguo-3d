@@ -11,10 +11,15 @@ description = "Authoring API: scene, materials, and solver params (replaces the 
 engine-core.workspace = true
 glam.workspace = true
 serde.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+# The bundle integration test loads a real `*_collision.glb`. `engine-io` depends on
+# `engine-api`, so this can only ever be a DEV dependency — Cargo permits that cycle,
+# a normal one would not build. Production callers load the mesh themselves.
+engine-io.workspace = true
 # Integration tests drive the implicit solver directly (they need `CgCpu`), and a
 # crate's regular [dependencies] are not in scope for tests/.
 engine-core.workspace = true

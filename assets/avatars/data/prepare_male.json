@@ -1,0 +1,57 @@
+{
+  "sex": "male",
+  "source_file": "/Users/alexmkwizu/Documents/BlenderProjects/Blender_Claude_Experiments/inputs/nguo-3d-avatars/male_character.blend",
+  "source_verts": 843443,
+  "source_tris": 1686852,
+  "source_area_m2": 2.2859481,
+  "had_custom_normals": true,
+  "custom_normal_vs_smooth_deg": {
+    "mean": 1.23448,
+    "p99": 7.08352,
+    "p99.9": 17.12142,
+    "p99.99": 41.79163,
+    "max": 101.11673,
+    "loops": 5060556,
+    "over_15deg": 6789,
+    "over_45deg": 356
+  },
+  "stray_verts_removed": 0,
+  "stray_faces_removed": 0,
+  "holes_filled": [
+    {
+      "perimeter_m": 0.07843,
+      "centre": [
+        -0.16455,
+        -0.13321,
+        0.00255
+      ],
+      "verts": 40,
+      "faces_added": 1
+    }
+  ],
+  "applied_offset_m": [
+    -0.000344,
+    0.0,
+    -0.0
+  ],
+  "fill_faces_added": 38,
+  "final_verts": 843443,
+  "final_tris": 1686890,
+  "final_area_m2": 2.28633246,
+  "final_volume_m3": 0.09840593,
+  "height_m": 1.83,
+  "arm_span_m": 1.90928,
+  "depth_m": 0.357527,
+  "bbox_min": [
+    -0.95464,
+    -0.187898,
+    0.0
+  ],
+  "bbox_max": [
+    0.95464,
+    0.169629,
+    1.83
+  ],
+  "shape_max_deviation_m": 1.4901161193847656e-08,
+  "custom_normals_kept": false
+}

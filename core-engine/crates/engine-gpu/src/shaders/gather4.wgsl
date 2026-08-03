@@ -6,6 +6,14 @@
 // elements (egrad/ehess, produced by whichever element kernel ran first) into its own
 // entries. Only worker i writes row i → no atomics. Mirrors
 // engine_core::gather4::Gather4::assemble. `values`/`grad` must be pre-zeroed.
+//
+// BOUND BY: engine-gpu/src/{bending_asm,tet_assembler}.rs, fed from
+// engine_core::Gather4 — NOT the SpringAssembler that binds assemble.wgsl.
+// SENTINELS: `vt_off` CAN be -1 (block dropped, pinned partner vertex) — that is
+// the live sentinel and every use is guarded. `diag_off` can NOT be -1 (Gather4
+// pushes a diagonal block for every vertex unconditionally); the `off >= 0` test
+// on it below is belt-and-braces, and assemble.wgsl omitting the same test is
+// correct, not a bug.
 
 struct GP { n: u32, nnz: u32, ndof: u32, _p: u32 };
 

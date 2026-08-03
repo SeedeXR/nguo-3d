@@ -6,6 +6,14 @@
 // by up to two triangles, so off-diagonal blocks accumulate, but only worker i
 // writes row i, so no atomics. Mirrors engine_core::MembraneAssembler::assemble.
 // The `values`/`grad` buffers must be pre-zeroed (the host clears them each call).
+//
+// BOUND BY: engine-gpu/src/{membrane_asm,shell_asm}.rs, fed from
+// engine_core::{MembraneAssembler,ShellAssembler} (both wrap a Gather3) — NOT the
+// SpringAssembler that binds assemble.wgsl.
+// SENTINELS: `vt_off` CAN be -1 (block dropped, pinned partner vertex) — the live
+// sentinel, guarded at every use. `diag_off` can NOT be -1 (Gather3 pushes a
+// diagonal block for every vertex unconditionally); the `off >= 0` test on it
+// below is belt-and-braces, and assemble.wgsl omitting it is correct, not a bug.
 
 struct GP { n: u32, nnz: u32, ndof: u32, _p: u32 };
 

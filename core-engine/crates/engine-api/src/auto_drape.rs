@@ -19,7 +19,7 @@
 //! (`SolverConfig::gravity` defaults to `[0,-9.8,0]`, `params.rs`). Every citation
 //! below is transposed z→y, so ClothDrop's XY footprint is our XZ.
 
-use crate::{ColliderSpec, FabricPreset, Object, Scene, SolverConfig};
+use crate::{ColliderSpec, FabricPreset, Material, Object, Scene, SolverConfig};
 
 /// Blender cloth "Quality Steps" — solver substeps per frame. ClothDrop pins this
 /// to 12 for every preset (`utils.py:307` `cs.quality = 12`). Maps 1:1 onto our
@@ -233,6 +233,51 @@ pub fn cloth_plane(
     (positions, tris, uvs)
 }
 
+/// `fabric`'s elastic model with ClothDrop's contact overrides applied.
+///
+/// Returned as an inline [`Material`] rather than `Object::preset = Some(fabric)`
+/// because `Scene::lower` lets a named preset override the whole material, which
+/// would discard these overrides.
+pub(crate) fn drape_material(fabric: FabricPreset) -> Material {
+    let mut material = fabric.material();
+    material.contact_gap = CONTACT_MARGIN;
+    material.contact_offset = CONTACT_MARGIN;
+    material.friction = HIGH_FRICTION_MU;
+    material
+}
+
+/// Assemble the standard drape [`Scene`]: `target` forced static and placed
+/// **first** (`Scene::lower` takes its material from the last *dynamic* object, so
+/// the cloth must come second), ClothDrop's scheduling and self-collision, and a
+/// ground plane at `floor_y` so cloth that slides off lands instead of falling
+/// forever.
+///
+/// Shared by [`auto_drape`] and [`crate::avatar::drape_on_avatar`]; `target` is
+/// taken by value because both callers already own a clone (these meshes run to
+/// thousands of vertices).
+pub(crate) fn drape_scene(mut target: Object, cloth: Object, floor_y: f32) -> Scene {
+    target.is_static = true;
+    target.pins = Vec::new(); // every vertex is already kinematic
+
+    let config = SolverConfig {
+        substeps: CLOTHDROP_QUALITY,
+        self_collision: true, // utils.py:308 `collision.use_self_collision = True`
+        floor_y: Some(floor_y),
+        ..Default::default()
+    };
+    Scene {
+        config: SolverConfig {
+            frames: settle_frames(config.fps),
+            ..config
+        },
+        objects: vec![target, cloth],
+        colliders: vec![ColliderSpec::Plane {
+            point: [0.0, floor_y, 0.0],
+            normal: [0.0, 1.0, 0.0],
+        }],
+    }
+}
+
 /// Build a ready-to-simulate drape of `fabric` over `target`, using `preset` for
 /// mesh resolution.
 ///
@@ -253,54 +298,20 @@ pub fn auto_drape(target: &Object, preset: DrapePreset, fabric: FabricPreset) ->
     let y = bb.max[1] + PLACEMENT_GAP;
     let (positions, tris, uvs) = cloth_plane(bb, preset.verts_per_side(), margin, y);
 
-    // Contact settings come from ClothDrop; the elastic model comes from our own
-    // fabric table. Inline material rather than `preset: Some(fabric)` because
-    // `Scene::lower` lets a named preset override the whole material, which would
-    // discard these contact overrides.
-    let mut material = fabric.material();
-    material.contact_gap = CONTACT_MARGIN;
-    material.contact_offset = CONTACT_MARGIN;
-    material.friction = HIGH_FRICTION_MU;
-
-    let config = SolverConfig {
-        substeps: CLOTHDROP_QUALITY,
-        self_collision: true, // utils.py:308 `collision.use_self_collision = True`
-        floor_y: Some(bb.min[1]),
-        ..Default::default()
+    let cloth = Object {
+        name: format!("{}_cloth", target.name),
+        positions,
+        tris,
+        material: drape_material(fabric),
+        preset: None,
+        pins: Vec::new(),
+        is_static: false,
+        normals: Vec::new(),
+        uvs,
+        skin: None,
+        animations: Vec::new(),
     };
-
-    let mut static_target = target.clone();
-    static_target.is_static = true;
-    static_target.pins = Vec::new(); // every vertex is already kinematic
-
-    Some(Scene {
-        config: SolverConfig {
-            frames: settle_frames(config.fps),
-            ..config
-        },
-        // Static first: `Scene::lower` takes its material from the LAST dynamic
-        // object, so the cloth must come second.
-        objects: vec![
-            static_target,
-            Object {
-                name: format!("{}_cloth", target.name),
-                positions,
-                tris,
-                material,
-                preset: None,
-                pins: Vec::new(),
-                is_static: false,
-                normals: Vec::new(),
-                uvs,
-                skin: None,
-                animations: Vec::new(),
-            },
-        ],
-        colliders: vec![ColliderSpec::Plane {
-            point: [0.0, bb.min[1], 0.0],
-            normal: [0.0, 1.0, 0.0],
-        }],
-    })
+    Some(drape_scene(target.clone(), cloth, bb.min[1]))
 }
 
 #[cfg(test)]

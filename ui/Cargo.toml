@@ -36,6 +36,7 @@ nguo-doc = { path = "crates/nguo-doc" }
 nguo-doc-commands = { path = "crates/nguo-doc-commands" }
 nguo-pattern = { path = "crates/nguo-pattern" }
 nguo-measure = { path = "crates/nguo-measure" }
+nguo-avatar = { path = "crates/nguo-avatar" }
 nguo-sewing = { path = "crates/nguo-sewing" }
 nguo-triangulate = { path = "crates/nguo-triangulate" }
 nguo-gpu = { path = "crates/nguo-gpu" }
@@ -75,7 +76,15 @@ vello = "0.7"
 # crates (nguo-pattern) that need curve maths without pulling a renderer in.
 kurbo = "0.13"
 peniko = "0.6"
-egui = "0.33"
+# `default-features = false` drops egui's ONLY default feature, `default_fonts`
+# (verified in egui-0.33.3/Cargo.toml: `default = ["default_fonts"]`), and with
+# it the `epaint_default_fonts` crate — whose licence expression carried the
+# tree's last font licence that is not cleanly GPL-compatible (LICENSING.md §3).
+# egui then ships no font at all, so `nguo-gpu::overlay` installs the vendored
+# Space Mono (OFL-1.1) explicitly, which is also what makes the overlay's live
+# numbers stop jittering. `egui-wgpu` already depends on egui with
+# default-features off, so nothing else in the graph re-enables the feature.
+egui = { version = "0.33", default-features = false }
 egui-wgpu = "0.33"
 winit = "0.30"
 bytemuck = { version = "1", features = ["derive"] }

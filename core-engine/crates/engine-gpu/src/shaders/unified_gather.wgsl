@@ -8,6 +8,15 @@
 // and written once. `values`/`grad` must be pre-zeroed (the host clears them). No
 // two workers write the same entry → no atomics (see docs/DEVELOPING.md §6). Mirrors
 // UnifiedAssembler::assemble exactly (the CPU oracle).
+//
+// BOUND BY: engine-gpu/src/unified_asm.rs, fed from engine_core::UnifiedAssembler
+// — a third contract, distinct from both assemble.wgsl (SpringAssembler) and
+// gather4/membrane_gather (Gather3/Gather4).
+// SENTINELS: `s_off`/`vt_off` CAN be -1 (block dropped, pinned partner vertex) and
+// are guarded. `diag_off` can NOT be -1 — UnifiedAssembler pushes a diagonal block
+// for every vertex unconditionally, asserted CPU-side in unified_assembler.rs — so
+// the pinned path's `off >= 0` here is belt-and-braces and the free path's bare
+// `u32(diag_off[...])` below is safe by the same invariant.
 
 struct AP { n: u32, inv_h2: f32, k: f32, _pad: f32 };
 

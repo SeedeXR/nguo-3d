@@ -4,12 +4,16 @@
 //! [`SolverConfig`], then `scene.build()` to get a runnable `engine_core::Solver`.
 
 pub mod auto_drape;
+pub mod avatar;
 pub mod material;
 pub mod params;
 pub mod rig;
 pub mod scene;
 
 pub use auto_drape::{auto_drape, Aabb, DrapePreset};
+pub use avatar::{
+    avatar_collider, avatar_collider_near, drape_on_avatar, AvatarError, GarmentPlacement,
+};
 pub use material::{FabricPreset, Material};
 pub use params::{Barrier, Model, SolverConfig};
 pub use rig::{AnimationChannel, AnimationClip, AnimationPath, Joint, Skin};

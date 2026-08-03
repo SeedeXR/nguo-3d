@@ -1,0 +1,20 @@
+{
+  "sex": "female",
+  "files": [
+    "previews/female_hero.png",
+    "previews/female_orthos.png",
+    "previews/female_tones.png",
+    "previews/female_lods.png",
+    "previews/female_walk.png"
+  ],
+  "walk_clip": "f_Catwalk_Walk",
+  "walk_frames": [
+    1,
+    76,
+    152,
+    228,
+    303,
+    379
+  ],
+  "engine": "BLENDER_EEVEE"
+}

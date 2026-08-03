@@ -1,0 +1,236 @@
+{
+  "sex": "male",
+  "source_file": "/Users/alexmkwizu/Documents/BlenderProjects/Blender_Claude_Experiments/inputs/nguo-3d-avatars/male_character.blend",
+  "applied_offset_m": [
+    -0.000344,
+    0.0,
+    -0.0
+  ],
+  "lod0_worst_vertex_deviation_m": 5.066394805908203e-07,
+  "lod0_verts": 843443,
+  "render": {
+    "resolution": 760,
+    "views": [
+      "back",
+      "bottom",
+      "front",
+      "left",
+      "right",
+      "top"
+    ],
+    "engine": "BLENDER_WORKBENCH",
+    "material": "stripped"
+  },
+  "tolerance_silhouette_frac": {
+    "LOD0": 2e-05,
+    "LOD1": 0.0025,
+    "LOD2": 0.01,
+    "COL": 0.06
+  },
+  "tiers": {
+    "LOD0": {
+      "silhouette_pixels": 388222,
+      "silhouette_mismatch": 2,
+      "silhouette_mismatch_frac": 5e-06,
+      "shading_diff_pixels": 77,
+      "worst_rgb_diff": 0.09412,
+      "per_view": {
+        "front": {
+          "silhouette_pixels": 96743,
+          "silhouette_mismatch": 1,
+          "silhouette_mismatch_frac": 1e-05,
+          "shading_diff_pixels": 3,
+          "max_rgb_diff": 0.01176
+        },
+        "back": {
+          "silhouette_pixels": 96747,
+          "silhouette_mismatch": 0,
+          "silhouette_mismatch_frac": 0.0,
+          "shading_diff_pixels": 0,
+          "max_rgb_diff": 0.00392
+        },
+        "left": {
+          "silhouette_pixels": 51892,
+          "silhouette_mismatch": 1,
+          "silhouette_mismatch_frac": 1.9e-05,
+          "shading_diff_pixels": 0,
+          "max_rgb_diff": 0.00392
+        },
+        "right": {
+          "silhouette_pixels": 51899,
+          "silhouette_mismatch": 0,
+          "silhouette_mismatch_frac": 0.0,
+          "shading_diff_pixels": 0,
+          "max_rgb_diff": 0.00392
+        },
+        "top": {
+          "silhouette_pixels": 45474,
+          "silhouette_mismatch": 0,
+          "silhouette_mismatch_frac": 0.0,
+          "shading_diff_pixels": 0,
+          "max_rgb_diff": 0.00392
+        },
+        "bottom": {
+          "silhouette_pixels": 45467,
+          "silhouette_mismatch": 0,
+          "silhouette_mismatch_frac": 0.0,
+          "shading_diff_pixels": 74,
+          "max_rgb_diff": 0.09412
+        }
+      }
+    },
+    "LOD1": {
+      "silhouette_pixels": 388278,
+      "silhouette_mismatch": 87,
+      "silhouette_mismatch_frac": 0.000224,
+      "shading_diff_pixels": 2896,
+      "worst_rgb_diff": 0.17255,
+      "per_view": {
+        "front": {
+          "silhouette_pixels": 96758,
+          "silhouette_mismatch": 21,
+          "silhouette_mismatch_frac": 0.000217,
+          "shading_diff_pixels": 1098,
+          "max_rgb_diff": 0.17255
+        },
+        "back": {
+          "silhouette_pixels": 96759,
+          "silhouette_mismatch": 18,
+          "silhouette_mismatch_frac": 0.000186,
+          "shading_diff_pixels": 317,
+          "max_rgb_diff": 0.05098
+        },
+        "left": {
+          "silhouette_pixels": 51897,
+          "silhouette_mismatch": 9,
+          "silhouette_mismatch_frac": 0.000173,
+          "shading_diff_pixels": 157,
+          "max_rgb_diff": 0.04706
+        },
+        "right": {
+          "silhouette_pixels": 51906,
+          "silhouette_mismatch": 10,
+          "silhouette_mismatch_frac": 0.000193,
+          "shading_diff_pixels": 357,
+          "max_rgb_diff": 0.05882
+        },
+        "top": {
+          "silhouette_pixels": 45482,
+          "silhouette_mismatch": 14,
+          "silhouette_mismatch_frac": 0.000308,
+          "shading_diff_pixels": 471,
+          "max_rgb_diff": 0.12941
+        },
+        "bottom": {
+          "silhouette_pixels": 45476,
+          "silhouette_mismatch": 15,
+          "silhouette_mismatch_frac": 0.00033,
+          "shading_diff_pixels": 496,
+          "max_rgb_diff": 0.09412
+        }
+      }
+    },
+    "LOD2": {
+      "silhouette_pixels": 388395,
+      "silhouette_mismatch": 296,
+      "silhouette_mismatch_frac": 0.000762,
+      "shading_diff_pixels": 26352,
+      "worst_rgb_diff": 0.21961,
+      "per_view": {
+        "front": {
+          "silhouette_pixels": 96788,
+          "silhouette_mismatch": 66,
+          "silhouette_mismatch_frac": 0.000682,
+          "shading_diff_pixels": 8986,
+          "max_rgb_diff": 0.17255
+        },
+        "back": {
+          "silhouette_pixels": 96788,
+          "silhouette_mismatch": 65,
+          "silhouette_mismatch_frac": 0.000672,
+          "shading_diff_pixels": 4156,
+          "max_rgb_diff": 0.12941
+        },
+        "left": {
+          "silhouette_pixels": 51918,
+          "silhouette_mismatch": 38,
+          "silhouette_mismatch_frac": 0.000732,
+          "shading_diff_pixels": 2013,
+          "max_rgb_diff": 0.14902
+        },
+        "right": {
+          "silhouette_pixels": 51919,
+          "silhouette_mismatch": 30,
+          "silhouette_mismatch_frac": 0.000578,
+          "shading_diff_pixels": 3299,
+          "max_rgb_diff": 0.21961
+        },
+        "top": {
+          "silhouette_pixels": 45494,
+          "silhouette_mismatch": 48,
+          "silhouette_mismatch_frac": 0.001055,
+          "shading_diff_pixels": 4099,
+          "max_rgb_diff": 0.14118
+        },
+        "bottom": {
+          "silhouette_pixels": 45488,
+          "silhouette_mismatch": 49,
+          "silhouette_mismatch_frac": 0.001077,
+          "shading_diff_pixels": 3799,
+          "max_rgb_diff": 0.16863
+        }
+      }
+    },
+    "COL": {
+      "silhouette_pixels": 388689,
+      "silhouette_mismatch": 900,
+      "silhouette_mismatch_frac": 0.002315,
+      "shading_diff_pixels": 77391,
+      "worst_rgb_diff": 0.32941,
+      "per_view": {
+        "front": {
+          "silhouette_pixels": 96844,
+          "silhouette_mismatch": 195,
+          "silhouette_mismatch_frac": 0.002014,
+          "shading_diff_pixels": 22643,
+          "max_rgb_diff": 0.32941
+        },
+        "back": {
+          "silhouette_pixels": 96846,
+          "silhouette_mismatch": 193,
+          "silhouette_mismatch_frac": 0.001993,
+          "shading_diff_pixels": 15157,
+          "max_rgb_diff": 0.23529
+        },
+        "left": {
+          "silhouette_pixels": 51948,
+          "silhouette_mismatch": 94,
+          "silhouette_mismatch_frac": 0.00181,
+          "shading_diff_pixels": 8134,
+          "max_rgb_diff": 0.21569
+        },
+        "right": {
+          "silhouette_pixels": 51961,
+          "silhouette_mismatch": 104,
+          "silhouette_mismatch_frac": 0.002002,
+          "shading_diff_pixels": 8804,
+          "max_rgb_diff": 0.24706
+        },
+        "top": {
+          "silhouette_pixels": 45550,
+          "silhouette_mismatch": 161,
+          "silhouette_mismatch_frac": 0.003535,
+          "shading_diff_pixels": 11037,
+          "max_rgb_diff": 0.25882
+        },
+        "bottom": {
+          "silhouette_pixels": 45540,
+          "silhouette_mismatch": 153,
+          "silhouette_mismatch_frac": 0.00336,
+          "shading_diff_pixels": 11616,
+          "max_rgb_diff": 0.24706
+        }
+      }
+    }
+  }
+}

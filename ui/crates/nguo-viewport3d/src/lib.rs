@@ -5,13 +5,74 @@
 pub mod camera;
 mod renderer;
 
+use std::sync::Arc;
+
+use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2, Vec3};
 use iced::widget::shader::{self, Primitive};
 use iced::{mouse, Rectangle};
 use nguo_gpu::scale::{self, PhysicalRect};
 
 pub use camera::Camera;
-pub use renderer::{ClothRenderer, DEPTH_FORMAT};
+pub use renderer::{AvatarRenderer, ClothRenderer, DEPTH_FORMAT};
+
+/// One mesh vertex, in the bundle's own space: metres, +Y up, +Z forward,
+/// right-handed. No axis conversion — that is glTF's convention and ours.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+pub struct Vertex {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+}
+
+/// Avatar geometry, ready to upload. Immutable, and shared by `Arc` so the
+/// per-frame [`Viewport`] stays cheap to clone and the renderer can tell "same
+/// body" from "different body" by pointer.
+#[derive(Debug, PartialEq)]
+pub struct AvatarMesh {
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
+}
+
+impl AvatarMesh {
+    /// Build from a loaded `engine_api::Object`-shaped mesh.
+    ///
+    /// Normals are optional in glTF and the bundle's are OpenGL / Y+, which is
+    /// what this shader wants as-is. A mesh without them gets flat +Y normals
+    /// rather than a panic — it renders dull, not missing.
+    pub fn new(positions: &[[f32; 3]], normals: &[[f32; 3]], tris: &[[u32; 3]]) -> AvatarMesh {
+        let aligned = normals.len() == positions.len();
+        AvatarMesh {
+            vertices: positions
+                .iter()
+                .enumerate()
+                .map(|(i, position)| Vertex {
+                    position: *position,
+                    normal: if aligned { normals[i] } else { [0.0, 1.0, 0.0] },
+                })
+                .collect(),
+            indices: tris.iter().flatten().copied().collect(),
+        }
+    }
+
+    /// `(min, max)` corner of the axis-aligned bounds, in metres. `None` for
+    /// an empty mesh.
+    pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
+        let mut it = self.vertices.iter().map(|v| Vec3::from(v.position));
+        let first = it.next()?;
+        Some(it.fold((first, first), |(lo, hi), p| (lo.min(p), hi.max(p))))
+    }
+}
+
+/// The avatar the viewport should draw this frame.
+#[derive(Debug, Clone)]
+pub struct Avatar {
+    pub mesh: Arc<AvatarMesh>,
+    /// Linear `baseColorFactor`, from `nguo_avatar::MonkTone::factor` — **not**
+    /// a Monk swatch colour, and not the published linear tone either. Those
+    /// are three different colours (`INTEGRATION.md` §4).
+    pub base_color: [f32; 4],
+}
 
 /// What the viewport asks the application to do. The widget owns no
 /// authoritative state.
@@ -38,12 +99,17 @@ pub struct State {
     last_cursor: Option<iced::Point>,
 }
 
-/// The widget program. Cheap to rebuild every `view()`.
-#[derive(Debug, Clone, Copy)]
+/// The widget program. Cheap to rebuild every `view()` — the avatar is an
+/// `Arc` clone, not a mesh copy.
+#[derive(Debug, Clone)]
 pub struct Viewport {
     pub camera: Camera,
     /// Animation clock, seconds.
     pub time: f32,
+    /// The body to draw. `None` — no bundle, or it failed to load — falls back
+    /// to the bring-up cloth sheet, so a clone without `assets/avatars/` still
+    /// has a populated viewport.
+    pub avatar: Option<Avatar>,
 }
 
 /// Radians of orbit per logical point of drag.
@@ -118,6 +184,7 @@ impl shader::Program<Action> for Viewport {
         ClothPrimitive {
             camera: self.camera,
             time: self.time,
+            avatar: self.avatar.clone(),
         }
     }
 
@@ -138,15 +205,17 @@ impl shader::Program<Action> for Viewport {
 }
 
 /// One frame of viewport content.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ClothPrimitive {
     camera: Camera,
     time: f32,
+    avatar: Option<Avatar>,
 }
 
 #[derive(Debug)]
 pub struct ClothPipeline {
     renderer: ClothRenderer,
+    avatar: AvatarRenderer,
     // ponytail: a single viewport instance, so the current frame's rectangle
     // can live on the shared pipeline. Key it per widget when we add a second
     // 3D view (split-screen / detached window, guide §2.6).
@@ -159,6 +228,7 @@ impl shader::Pipeline for ClothPipeline {
 
         Self {
             renderer: ClothRenderer::new(device, format),
+            avatar: AvatarRenderer::new(device, format),
             rect: PhysicalRect::default(),
         }
     }
@@ -185,13 +255,6 @@ impl Primitive for ClothPrimitive {
             viewport.scale_factor(),
         );
 
-        // The depth attachment has to match the colour attachment, which is
-        // the whole frame.
-        let frame = viewport.physical_size();
-        pipeline
-            .renderer
-            .ensure_depth(device, frame.width, frame.height);
-
         // Aspect from the LOGICAL bounds: identical to the physical aspect,
         // and it does not blow up when a resize leaves a zero-width target.
         let aspect = if bounds.height > 0.0 {
@@ -199,9 +262,27 @@ impl Primitive for ClothPrimitive {
         } else {
             1.0
         };
-        pipeline
-            .renderer
-            .upload(queue, self.camera.view_projection(aspect), self.time);
+        let view_projection = self.camera.view_projection(aspect);
+
+        // The depth attachment has to match the colour attachment, which is
+        // the whole frame. Only the pass that will actually run allocates one.
+        let frame = viewport.physical_size();
+        match &self.avatar {
+            Some(avatar) => {
+                pipeline
+                    .avatar
+                    .ensure_depth(device, frame.width, frame.height);
+                pipeline
+                    .avatar
+                    .upload(device, queue, avatar, view_projection);
+            }
+            None => {
+                pipeline
+                    .renderer
+                    .ensure_depth(device, frame.width, frame.height);
+                pipeline.renderer.upload(queue, view_projection, self.time);
+            }
+        }
     }
 
     fn render(
@@ -211,23 +292,80 @@ impl Primitive for ClothPrimitive {
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
-        pipeline.renderer.draw(
-            encoder,
-            target,
-            pipeline.rect,
-            PhysicalRect {
-                x: clip_bounds.x,
-                y: clip_bounds.y,
-                width: clip_bounds.width,
-                height: clip_bounds.height,
-            },
-        );
+        let clip = PhysicalRect {
+            x: clip_bounds.x,
+            y: clip_bounds.y,
+            width: clip_bounds.width,
+            height: clip_bounds.height,
+        };
+
+        // The body replaces the bring-up sheet rather than sharing the frame
+        // with it: the sheet is a horizontal plane at y≈0, which would slice
+        // through the avatar's shins.
+        if self.avatar.is_some() {
+            pipeline.avatar.draw(encoder, target, pipeline.rect, clip);
+        } else {
+            pipeline.renderer.draw(encoder, target, pipeline.rect, clip);
+        }
     }
 }
 
 /// The view-projection a headless test should use for a given target size.
 pub fn view_projection(camera: &Camera, width: u32, height: u32) -> Mat4 {
     camera.view_projection(width as f32 / height as f32)
+}
+
+#[cfg(test)]
+mod mesh_tests {
+    use super::*;
+
+    const POSITIONS: [[f32; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.8, 0.5]];
+
+    #[test]
+    fn a_mesh_keeps_its_normals_and_flattens_its_triangles() {
+        let normals = [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]];
+        let mesh = AvatarMesh::new(&POSITIONS, &normals, &[[0, 1, 2]]);
+
+        assert_eq!(mesh.indices, vec![0, 1, 2]);
+        assert_eq!(mesh.vertices.len(), 3);
+        assert_eq!(mesh.vertices[2].position, [0.0, 1.8, 0.5]);
+        assert_eq!(mesh.vertices[2].normal, [1.0, 0.0, 0.0]);
+        assert_eq!(
+            mesh.bounds(),
+            Some((Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 1.8, 0.5)))
+        );
+    }
+
+    /// A mesh whose normals do not line up with its positions must not index
+    /// out of bounds, and must not silently pair the wrong normal with a
+    /// vertex either — every vertex gets the flat fallback or none does.
+    #[test]
+    fn mismatched_normals_fall_back_flat_rather_than_panicking() {
+        for normals in [vec![], vec![[0.0, 0.0, 1.0]]] {
+            let mesh = AvatarMesh::new(&POSITIONS, &normals, &[[0, 1, 2]]);
+            assert_eq!(mesh.vertices.len(), 3);
+            assert!(
+                mesh.vertices.iter().all(|v| v.normal == [0.0, 1.0, 0.0]),
+                "a partial normal array must not be used at all",
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_mesh_has_no_bounds_and_draws_nothing() {
+        let mesh = AvatarMesh::new(&[], &[], &[]);
+        assert_eq!(mesh.bounds(), None);
+        assert!(mesh.indices.is_empty());
+    }
+
+    /// The vertex buffer layout in `renderer.rs` hardcodes two `Float32x3` at
+    /// offsets 0 and 12. If `Vertex` ever grows a field, that layout is wrong
+    /// and the body renders as garbage rather than failing to compile.
+    #[test]
+    fn the_vertex_is_still_two_float3s() {
+        assert_eq!(std::mem::size_of::<Vertex>(), 24);
+        assert_eq!(std::mem::align_of::<Vertex>(), 4);
+    }
 }
 
 #[cfg(test)]
@@ -248,6 +386,7 @@ mod routing_tests {
         let viewport = Viewport {
             camera: Camera::default(),
             time: 0.0,
+            avatar: None,
         };
         let mut state = State::default();
 
@@ -289,6 +428,7 @@ mod routing_tests {
         let viewport = Viewport {
             camera: Camera::default(),
             time: 0.0,
+            avatar: None,
         };
         let mut state = State::default();
 

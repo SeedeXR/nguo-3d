@@ -49,6 +49,7 @@ Prerequisites beyond the Rust toolchain: `jq` (adapter assertions) and
 |---|---|---|
 | `ci.yml` → `lint` | macos-15 | **Required** |
 | `ci.yml` → `test` | macos-15 | **Required** |
+| `ci.yml` → `avatars` | macos-15 | Advisory — **reports NOT RUN today**, see §8b |
 | `ci.yml` → `gpu` | macos-15 | **Required** |
 | `ci.yml` → `build` | macos-15 | **Required** |
 | `ci.yml` → `perf` | macos-15 | Advisory (`continue-on-error`) |
@@ -206,6 +207,65 @@ regeneration is still manual.
 
 **Verified locally** with `cargo-deny 0.20.2`: `bans ok, licenses ok,
 sources ok` for both workspaces.
+
+---
+
+## 8b. Avatar coverage, and why it is its own job
+
+Added 2026-08-03, with the avatar bundle replacement.
+
+**The problem.** `assets/avatars/` is **227 MB** (70 files, verified with `find`
++ `stat`) and its `.glb`/`.vrm`/`.png` are behind **git-LFS**. The 13 avatar
+tests — 8 in `ui/crates/nguo-avatar/tests/bundle.rs`, 5 (1 `#[ignore]`) in
+`core-engine/crates/engine-api/tests/avatar_bundle.rs` — are **bundle-gated**:
+with no bundle they print a skip notice and *pass*. So on a runner without the
+bundle, `make test` is green while covering none of the avatar path.
+
+**Two facts drove the design, both checked rather than assumed:**
+
+1. **`actions/checkout` does not fetch LFS objects.** It needs `lfs: true`.
+   Without it the tree gets ~130-byte pointer **text** files where the GLBs
+   should be. Those are not *missing*, so the tests would not skip — they would
+   fail inside the glTF reader as `AvatarError::MeshLoad`. That is the right
+   failure, but it is a failure, not coverage.
+2. **`assets/avatars/` is not tracked in git yet.** Verified 2026-08-03:
+   `git ls-files assets | wc -l` → **0**, and `git lfs ls-files` → empty. The
+   directory exists on disk and is not gitignored; it has simply never been
+   added. **So `lfs: true` has nothing to fetch and there is no avatar coverage
+   in CI today.**
+
+**The design.**
+
+| | |
+|---|---|
+| Where | `ci.yml` → `avatars`, macos-15 |
+| Checkout | `lfs: true` — **the only LFS checkout in this repo's CI** |
+| Gate | `make test-avatars`, which sets `MGUSO_REQUIRE_AVATAR_BUNDLE=1` and **fails** rather than skips when the bundle is absent |
+| When the bundle is untracked | writes a **`⚠ AVATAR COVERAGE: NOT RUN`** block to `$GITHUB_STEP_SUMMARY` and does not run the suites |
+| Blocking | **No.** Advisory until the bundle is committed — a required check that passes vacuously is worse than no check |
+
+**Why not `lfs: true` on every job:** five jobs × 227 MB per push, against a
+metered LFS bandwidth allowance, to make four more jobs' worth of tests skip.
+One job pays it. The rest run bundle-less on purpose, which keeps "the app
+degrades gracefully with no bundle" continuously exercised instead of asserted.
+
+**Making the skip visible everywhere else.** `make test` now depends on
+`make avatar-bundle`, which prints `PRESENT`/`ABSENT` plus the file count and
+size before the suites run, and never fails. So a bundle-less run says so at the
+top of its log instead of hiding it among ~800 test lines.
+
+**To promote `avatars` to blocking**, once `assets/avatars/` is committed:
+delete the `Bundle presence` step and the `if:` on the last step in the
+`avatars` job — `make test-avatars` already fails on a missing bundle — then add
+`avatars` to the branch-protection required-checks list.
+
+**Verified locally 2026-08-03:** `make avatar-bundle` on both paths (`PRESENT
+… 70 files, 232796 KB`, and `ABSENT` with `NGUO_AVATAR_BUNDLE=/nope`);
+`make test-avatars NGUO_AVATAR_BUNDLE=/nope` → exit 1 with the actionable
+message; `make test-avatars` against the real bundle → **exit 0**, 8 + 4 bundle
+tests ran. `actionlint 1.7.12` on all three workflows → **exit 0**.
+**Never executed:** the job as a job — `lfs: true`, the `$GITHUB_STEP_SUMMARY`
+write and the `steps.bundle.outputs` condition have no runner behind them yet.
 
 ---
 

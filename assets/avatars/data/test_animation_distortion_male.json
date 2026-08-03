@@ -1,0 +1,56 @@
+{
+  "sex": "male",
+  "frame_step": 5,
+  "source": "07_male_lod.blend",
+  "gate_max_growth_ratio": 5.0,
+  "posed_proxy_deviation": {
+    "max_mm": 5.3488,
+    "at": "f_Catwalk_Sequence_02@51"
+  },
+  "tiers": [
+    {
+      "tier": "Nguo_Male_Body_COL",
+      "verts": 7498,
+      "median_edge_mm": 19.3459,
+      "max_growth_over_median": 2.2958,
+      "max_growth_mm": 44.4141,
+      "mean_growth_over_median": 0.010531,
+      "worst_frame_edges_over_5x": 0,
+      "worst_action": "f_Female_Start_Walking",
+      "worst_frame": 31
+    },
+    {
+      "tier": "Nguo_Male_Body_LOD0",
+      "verts": 843443,
+      "median_edge_mm": 1.9609,
+      "max_growth_over_median": 3.3618,
+      "max_growth_mm": 6.5921,
+      "mean_growth_over_median": 0.007456,
+      "worst_frame_edges_over_5x": 0,
+      "worst_action": "f_Female_Start_Walking",
+      "worst_frame": 31
+    },
+    {
+      "tier": "Nguo_Male_Body_LOD1",
+      "verts": 99998,
+      "median_edge_mm": 5.1964,
+      "max_growth_over_median": 3.1889,
+      "max_growth_mm": 16.5707,
+      "mean_growth_over_median": 0.009473,
+      "worst_frame_edges_over_5x": 0,
+      "worst_action": "f_Catwalk_Walk",
+      "worst_frame": 251
+    },
+    {
+      "tier": "Nguo_Male_Body_LOD2",
+      "verts": 24998,
+      "median_edge_mm": 10.5503,
+      "max_growth_over_median": 2.8405,
+      "max_growth_mm": 29.9684,
+      "mean_growth_over_median": 0.009922,
+      "worst_frame_edges_over_5x": 0,
+      "worst_action": "f_Catwalk_Walk",
+      "worst_frame": 1
+    }
+  ]
+}

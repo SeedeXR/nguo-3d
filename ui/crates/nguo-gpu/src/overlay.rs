@@ -8,6 +8,39 @@ use std::sync::Arc;
 use egui_wgpu::ScreenDescriptor;
 use iced::widget::shader::{self, Primitive};
 
+/// Space Mono Regular, SIL OFL 1.1 (`ui/assets/fonts/LICENSE.md`).
+///
+/// egui is built with `default-features = false`, so `default_fonts` is off and
+/// `FontDefinitions::default()` is `FontDefinitions::empty()` — egui has no
+/// font whatsoever unless we supply one. Two reasons it is this font:
+/// the overlay is a wall of live numbers and a monospace face stops the columns
+/// jittering as digits change width; and dropping egui's bundled fonts removed
+/// `epaint_default_fonts`, the last crate in the tree carrying a font licence
+/// whose GPL compatibility is not clean (LICENSING.md §3).
+///
+/// `include_bytes!` on purpose: a missing or renamed asset must fail the build,
+/// not ship a blank overlay. `.gitattributes` §4 keeps it out of LFS.
+const SPACE_MONO_TTF: &[u8] = include_bytes!("../../../assets/fonts/SpaceMono-Regular.ttf");
+
+/// Space Mono for both font families, so *every* glyph the overlay draws comes
+/// from it — egui's built-in styles use `Proportional` for body/heading/button
+/// text and `Monospace` only for `TextStyle::Monospace`.
+fn space_mono_only() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::empty();
+    fonts.font_data.insert(
+        "SpaceMono".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(SPACE_MONO_TTF)),
+    );
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("SpaceMono".to_owned());
+    }
+    fonts
+}
+
 /// The egui context + renderer. Persistent across frames.
 pub struct OverlayPipeline {
     context: egui::Context,
@@ -28,8 +61,11 @@ impl shader::Pipeline for OverlayPipeline {
     fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         crate::adopt(device, queue, format, "egui-overlay");
 
+        let context = egui::Context::default();
+        context.set_fonts(space_mono_only());
+
         Self {
-            context: egui::Context::default(),
+            context,
             // egui wants a gamma-space target, which is exactly what iced
             // gives us with its default `web-colors` feature.
             renderer: egui_wgpu::Renderer::new(
@@ -169,5 +205,29 @@ impl Primitive for OverlayPrimitive {
             &pipeline.jobs,
             &pipeline.screen,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// With `default_fonts` off, an empty family list means egui renders no
+    /// text at all — silently. This is the check that catches that, plus a
+    /// truncated/LFS-pointer TTF, without needing a GPU.
+    #[test]
+    fn space_mono_is_installed_for_every_family() {
+        let fonts = space_mono_only();
+        assert_eq!(fonts.font_data.len(), 1);
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            assert_eq!(
+                fonts.families.get(&family).map(Vec::as_slice),
+                Some(["SpaceMono".to_owned()].as_slice()),
+                "{family:?} must resolve to the vendored font"
+            );
+        }
+        // TrueType magic — an LFS pointer or a truncated file fails here.
+        assert_eq!(&SPACE_MONO_TTF[..4], &[0x00, 0x01, 0x00, 0x00]);
+        assert_eq!(SPACE_MONO_TTF.len(), 99_356);
     }
 }

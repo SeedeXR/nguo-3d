@@ -13,6 +13,15 @@
 # milestone M2 and for Windows at M4.
 #
 # The only REQUIRED workflows today are ci.yml (macOS) and licenses.yml.
+#
+# AVATAR BUNDLE: neither job here checks out LFS, so `assets/avatars/` is absent
+# and the bundle-gated avatar suites skip. `make test` depends on
+# `make avatar-bundle`, which prints that fact at the top of the log rather than
+# letting it pass silently. Avatar coverage lives in ci.yml's `avatars` job and
+# is macOS-only on purpose: the bundle is 227 MB and the avatar path is pure
+# CPU glTF parsing plus a solver step, with nothing platform-specific to learn
+# from paying that download twice more. Revisit if a platform-specific avatar
+# defect ever shows up.
 
 name: Cross-platform (advisory)
 

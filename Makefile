@@ -3,9 +3,14 @@
 # nguo-3d developer gates. CI runs THESE targets, not its own copies of the
 # commands, so local and CI cannot drift. If you change a gate, change it here.
 #
-#   make ci          everything a PR must pass (fmt, clippy, test, wgpu, licences)
-#   make gpu         Metal smoke test + the 10x determinism gate (needs a GPU)
-#   make help        list targets
+#   make ci           everything a PR must pass (fmt, clippy, test, wgpu, licences)
+#   make gpu          Metal smoke test + the 10x determinism gate (needs a GPU)
+#   make test-avatars avatar coverage, skips turned into failures (needs the bundle)
+#   make help         list targets
+#
+# `test-avatars` is deliberately NOT part of `ci`: the avatar bundle is 227 MB
+# behind git-LFS, and `make ci` must stay runnable on a clone made without LFS.
+# CI runs it in its own job, which is the only place that pays the LFS download.
 #
 # Two cargo workspaces live in this tree and neither contains the other, so
 # every target loops over both.
@@ -30,8 +35,22 @@ DET_RUNS   ?= 10
 DET_SOLVER ?= implicit
 DET_DIR    ?= .determinism-tmp
 
-.PHONY: help ci fmt fmt-fix clippy test check-wgpu licenses licenses-sync gpu gpu-smoke determinism \
-        build-release build-engine build-ui bench clean-det
+# One cargo-about invocation, used by both `attribution` and `attribution-check`
+# so the two can never generate differently. `$$ws` and `$$out` are *shell*
+# variables filled in by the recipe's for-loop; make only substitutes `$$`->`$`.
+# --workspace: every member crate, not just the root. --fail: an unresolvable
+# licence is an error, not a silent gap. --locked: never edit Cargo.lock.
+ABOUT_GEN = cargo about generate --manifest-path $$ws/Cargo.toml \
+            --config $$ws/about.toml $$ws/about.hbs \
+            --workspace --fail --locked --output-file "$$out"
+
+# The avatar bundle. `make test-avatars` refuses to run without it rather than
+# skipping, so avatar coverage can never be silently absent. See ui/docs/AVATARS.md §8.
+AVATAR_BUNDLE ?= $(if $(NGUO_AVATAR_BUNDLE),$(NGUO_AVATAR_BUNDLE),assets/avatars)
+
+.PHONY: help ci fmt fmt-fix clippy test test-avatars avatar-bundle check-wgpu licenses licenses-sync \
+        gpu gpu-smoke determinism attribution attribution-check build-release build-engine build-ui \
+        bench clean-det
 
 help:
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | sed 's/:.*## /\t/' | expand -t22
@@ -52,25 +71,85 @@ fmt-fix: ## rewrite files to satisfy `make fmt`
 clippy: ## cargo clippy --workspace --all-targets -- -D warnings, both workspaces
 	@for ws in $(WORKSPACES); do echo "== clippy: $$ws"; (cd $$ws && cargo clippy --workspace --all-targets -- -D warnings); done
 
-test: ## cargo test --workspace --no-fail-fast, both workspaces
+# `avatar-bundle` first so a bundle-less run says so BEFORE 800 tests scroll past
+# and the avatar skips vanish into the noise. It never fails, so it cannot make
+# `make ci` depend on a 227 MB LFS payload.
+test: avatar-bundle ## cargo test --workspace --no-fail-fast, both workspaces
 	@for ws in $(WORKSPACES); do echo "== test: $$ws"; (cd $$ws && cargo test --workspace --no-fail-fast); done
 
-licenses: licenses-sync ## cargo-deny: licence allow-list + wgpu ban + source allow-list
+## ---------------------------------------------------------------------------
+## Avatar coverage.
+##
+## The avatar suites are BUNDLE-GATED: with no `assets/avatars/` they print a
+## skip notice and PASS. That is right for a laptop without the 227 MB LFS
+## payload and wrong for a gate — `make test` on a bundle-less machine reports
+## green while covering none of the avatar path.
+##
+## So there are two targets and they do different jobs:
+##
+##   avatar-bundle   report presence, file count and size. Never fails. This is
+##                   what makes a skip VISIBLE instead of silent, and CI writes
+##                   its output into the job summary.
+##   test-avatars    the actual gate. Missing bundle = FAILURE, not a skip.
+##
+## `MGUSO_REQUIRE_AVATAR_BUNDLE=1` is engine-api's own switch that turns its
+## skip into a failure. The UI suite has no equivalent switch yet, so the
+## presence check below stands in for it — see ui/docs/AVATARS.md §8.
+## ---------------------------------------------------------------------------
+
+avatar-bundle: ## Report whether the avatar bundle is present (never fails)
+	@if [ -f "$(AVATAR_BUNDLE)/data/manifest.json" ]; then \
+	  n=$$(find "$(AVATAR_BUNDLE)" -type f | wc -l | tr -d ' '); \
+	  kb=$$(du -sk "$(AVATAR_BUNDLE)" | cut -f1); \
+	  echo "== avatar bundle: PRESENT at $(AVATAR_BUNDLE) — $$n files, $$kb KB"; \
+	else \
+	  echo "== avatar bundle: ABSENT at $(AVATAR_BUNDLE) (no data/manifest.json)"; \
+	  echo "   Avatar tests SKIP silently in 'make test'. Run 'make test-avatars' to make that a failure."; \
+	  echo "   Install the bundle to assets/avatars/ (git lfs) or set NGUO_AVATAR_BUNDLE."; \
+	fi
+
+test-avatars: ## Avatar suites with skips turned into FAILURES (needs the bundle)
+	@test -f "$(AVATAR_BUNDLE)/data/manifest.json" || { \
+	  echo "ERROR: no avatar bundle at $(AVATAR_BUNDLE) — avatar coverage cannot run."; \
+	  echo "  This target FAILS instead of skipping on purpose: a green 'make test'"; \
+	  echo "  without the bundle covers none of the avatar path."; \
+	  echo "  Fix: 'git lfs pull', or set NGUO_AVATAR_BUNDLE to a copy elsewhere."; \
+	  exit 1; }
+	@echo "== test-avatars: bundle at $(AVATAR_BUNDLE)"
+	NGUO_AVATAR_BUNDLE="$$(cd "$(AVATAR_BUNDLE)" && pwd)" MGUSO_REQUIRE_AVATAR_BUNDLE=1 \
+	  bash -c 'cd core-engine && cargo test -p engine-api --test avatar_bundle -- --nocapture'
+	NGUO_AVATAR_BUNDLE="$$(cd "$(AVATAR_BUNDLE)" && pwd)" MGUSO_REQUIRE_AVATAR_BUNDLE=1 \
+	  bash -c 'cd ui && cargo test -p nguo-avatar -- --nocapture'
+#	nguo-app holds 7 more bundle-gated tests (avatar::bundle_tests, plus the picker
+#	registry test). Omitting it meant this target claimed "avatar coverage RAN"
+#	while covering 8 of 15 gated tests — found by review, not by the target.
+	NGUO_AVATAR_BUNDLE="$$(cd "$(AVATAR_BUNDLE)" && pwd)" MGUSO_REQUIRE_AVATAR_BUNDLE=1 \
+	  bash -c 'cd ui && cargo test -p nguo-app --features debug-overlay -- --nocapture'
+	@echo "== test-avatars: avatar coverage RAN against a real bundle =="
+
+licenses: licenses-sync attribution-check ## cargo-deny allow-list + wgpu ban + sources + attribution freshness
 	@command -v cargo-deny >/dev/null || { echo "cargo-deny not installed: brew install cargo-deny (or cargo install --locked cargo-deny)"; exit 1; }
 	@for ws in $(WORKSPACES); do \
 	  echo "== cargo-deny: $$ws"; \
 	  cargo deny --manifest-path $$ws/Cargo.toml --config deny.toml check licenses bans sources; \
 	done
 
-## The two allow-lists (deny.toml = enforcement, core-engine/about.toml =
-## attribution) are documented as identical. They had drifted, because nothing
-## checked. This checks. It needs no tools, no build and no network — it is a
-## sorted diff of the two arrays.
+## Three files must agree: deny.toml (enforcement), core-engine/about.toml and
+## ui/about.toml (attribution). They had drifted before, because nothing
+## checked. This checks. It needs no tools, no build and no network.
 ##
-## It does NOT run cargo-about: attribution regeneration is still manual and
-## there is no cargo-about job anywhere. This target guarantees the *lists*
-## agree, not that THIRD_PARTY.md is current.
-licenses-sync: ## Fail if deny.toml and core-engine/about.toml allow-lists differ
+## The two about.toml files are byte-identical by design (TOML has no include),
+## as are the two about.hbs templates — so `cmp` covers ui entirely and only
+## core-engine/about.toml's array has to be diffed against deny.toml's.
+##
+## Freshness of the generated THIRD_PARTY.md files is `attribution-check`,
+## which `licenses` also depends on.
+licenses-sync: ## Fail if deny.toml / core-engine/about.{toml,hbs} / ui/about.{toml,hbs} differ
+	@for f in about.toml about.hbs; do \
+	  cmp -s core-engine/$$f ui/$$f || { \
+	    echo "ERROR: core-engine/$$f and ui/$$f have drifted (they must be identical)."; \
+	    diff -u core-engine/$$f ui/$$f || true; exit 1; }; \
+	done; echo "== licences-sync: core-engine/about.{toml,hbs} == ui/about.{toml,hbs}"
 	@a=$$(sed -n '/^allow = \[$$/,/^\]$$/p'    deny.toml              | grep -o '"[^"]*"' | sort); \
 	 b=$$(sed -n '/^accepted = \[$$/,/^\]$$/p' core-engine/about.toml | grep -o '"[^"]*"' | sort); \
 	 if [ -z "$$a" ] || [ -z "$$b" ]; then echo "ERROR: could not extract an allow-list — did the array formatting change?"; exit 1; fi; \
@@ -80,7 +159,45 @@ licenses-sync: ## Fail if deny.toml and core-engine/about.toml allow-lists diffe
 	   diff <(echo "$$a") <(echo "$$b") || true; \
 	   exit 1; \
 	 fi; \
-	 echo "== licences-sync: OK — deny.toml and core-engine/about.toml agree ($$(echo "$$a" | wc -l | tr -d ' ') licences)"
+	 echo "== licences-sync: OK — deny.toml and both about.toml agree ($$(echo "$$a" | wc -l | tr -d ' ') licences)"
+
+## ---------------------------------------------------------------------------
+## Attribution. GPL §1/§2 require conveying the licence notices of everything
+## we ship, so a stale THIRD_PARTY.md is a distribution problem, not a docs
+## problem — hence `attribution-check` is a dependency of `licenses` and blocks.
+##
+## `cargo-about` only sees Cargo dependencies. The vendored C++ (planegcs,
+## Eigen), the icons and the font are in a hand-maintained table at the bottom
+## of about.hbs, so they land in every generated file and cannot be dropped
+## without a template edit (which attribution-check then catches).
+## ---------------------------------------------------------------------------
+
+# Unique "- <crate> <version>" lines; the overview bullets ("- 158 crate(s)…")
+# do not match because a digit cannot follow the count word.
+CRATE_COUNT = grep -oE '^- \[?[A-Za-z0-9_.+-]+ [0-9]' "$$f" | sort -u | wc -l | tr -d ' '
+
+attribution: ## Regenerate <ws>/LICENSES/THIRD_PARTY.md for both workspaces
+	@command -v cargo-about >/dev/null || { echo "cargo-about not installed: brew install cargo-about (or cargo install --locked cargo-about)"; exit 1; }
+	@for ws in $(WORKSPACES); do \
+	  mkdir -p $$ws/LICENSES; f=$$ws/LICENSES/THIRD_PARTY.md; out=$$f; \
+	  $(ABOUT_GEN); \
+	  echo "== attribution: $$f — $$($(CRATE_COUNT)) crates, $$(wc -c < "$$f" | tr -d ' ') bytes"; \
+	done
+
+attribution-check: ## Fail if a generated THIRD_PARTY.md is stale (regenerate + diff)
+	@command -v cargo-about >/dev/null || { echo "cargo-about not installed: brew install cargo-about (or cargo install --locked cargo-about)"; exit 1; }
+	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	for ws in $(WORKSPACES); do \
+	  f=$$ws/LICENSES/THIRD_PARTY.md; out=$$tmp/$$ws.md; \
+	  [ -f "$$f" ] || { echo "ERROR: $$f is missing — run 'make attribution'"; exit 1; }; \
+	  $(ABOUT_GEN); \
+	  if ! diff -u "$$f" "$$out" > "$$tmp/$$ws.diff"; then \
+	    echo "ERROR: $$f is STALE — run 'make attribution' and commit the result."; \
+	    head -60 "$$tmp/$$ws.diff"; \
+	    exit 1; \
+	  fi; \
+	  echo "== attribution: $$f is current ($$($(CRATE_COUNT)) crates)"; \
+	done
 
 ## ---------------------------------------------------------------------------
 ## The single-wgpu-version check (wgpu version drift: the #1 integration

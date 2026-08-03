@@ -331,9 +331,11 @@ name = "engine-api"
 version = "0.0.1"
 dependencies = [
  "engine-core",
+ "engine-io",
  "glam",
  "serde",
  "serde_json",
+ "thiserror 2.0.19",
  "tracing",
 ]
 

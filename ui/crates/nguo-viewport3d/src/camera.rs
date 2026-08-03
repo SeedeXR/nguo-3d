@@ -38,6 +38,27 @@ const PITCH_LIMIT: f32 = 1.5533; // 89 degrees
 const NEAR: f32 = 0.05;
 const FAR: f32 = 100.0;
 
+/// Headroom [`Camera::frame_standing`] leaves around the figure. 1.0 would put
+/// the crown of the head exactly on the top edge of the widget.
+///
+/// **1.8, not 1.3, because the bodies are T-posed.** At 1.3 the shell's default
+/// 460 x 780 logical 3D pane cut both sets of fingertips off — observed on
+/// screen via `NGUO_CAPTURE` at a 1440 x 860 window. Arm span is 1.909 m male /
+/// 1.858 m female against statures of 1.830 m and 1.905 m, so a T-posed body is
+/// **wider than it is tall relative to a portrait pane**, and a fit computed
+/// from height alone cannot contain it. Solved numerically for the widest
+/// half-span the bundle ships (0.522 x stature, the male body) at the narrowest
+/// pane in the test below: **1.79 is the floor**, so 1.8.
+///
+/// The figure filling only ~56 % of the pane height is that geometry, not slack:
+/// a near-square object in a 0.59-aspect pane is bounded by width.
+///
+// ponytail: a constant, not an aspect-aware fit — it holds at the default yaw
+// and every aspect the test covers. The general fix needs the widget rectangle,
+// which only `Primitive::prepare` sees; plumb that back to the app only if
+// someone wants the fit to tighten up in a landscape pane.
+const FRAMING_MARGIN: f32 = 1.8;
+
 impl Camera {
     pub fn orbit(&mut self, delta_yaw: f32, delta_pitch: f32) {
         self.yaw += delta_yaw;
@@ -46,6 +67,20 @@ impl Camera {
 
     pub fn dolly(&mut self, factor: f32) {
         self.distance = (self.distance * factor).clamp(0.4, 60.0);
+    }
+
+    /// Frame a figure `height` metres tall standing with its feet at `y == 0`.
+    ///
+    /// Looks at mid-height and pulls back far enough that head and feet both
+    /// clear the vertical field of view with [`FRAMING_MARGIN`] to spare. The
+    /// pitch drops to near eye level because a body read from above is a body
+    /// you cannot judge a hemline on; yaw is left alone so a re-frame after an
+    /// avatar switch does not spin the model out from under the user.
+    pub fn frame_standing(&mut self, height: f32) {
+        let half = (height * 0.5).max(0.05);
+        self.target = Vec3::new(0.0, half, 0.0);
+        self.pitch = 0.08;
+        self.distance = (half / (self.fov_y * 0.5).tan() * FRAMING_MARGIN).clamp(0.4, 60.0);
     }
 
     pub fn eye(&self) -> Vec3 {
@@ -221,6 +256,65 @@ mod tests {
             assert_abs_diff_eq!(hit.x, reference.x, epsilon = 1e-6);
             assert_abs_diff_eq!(hit.z, reference.z, epsilon = 1e-6);
         }
+    }
+
+    /// Half a T-pose arm span, as a fraction of stature. The bundle's widest is
+    /// the male body: 1.909 m span / 1.830 m stature = **0.5216**. 0.53 gives it
+    /// a centimetre of slack and stays a property of *a standing human*, not of
+    /// one file.
+    const ARM_HALF_SPAN: f32 = 0.53;
+
+    /// The whole point of `frame_standing`: after it, the entire body is on
+    /// screen — head, feet **and both hands** — at every avatar height the
+    /// bundle ships and in a viewport as narrow as the shell's default 3D pane.
+    #[test]
+    fn framing_a_standing_body_puts_all_of_it_inside_the_widget() {
+        // Both bundle statures (male 1.830 m, female 1.90477 m), plus the
+        // extremes of the plausible range.
+        for height in [1.2_f32, 1.83, 1.90477, 2.1] {
+            for (w, h) in [(460.0_f32, 780.0_f32), (800.0, 600.0), (1280.0, 400.0)] {
+                let mut camera = Camera::default();
+                camera.frame_standing(height);
+                let size = Vec2::new(w, h);
+
+                // Head, feet, a shoulder half a metre off the centre line so a
+                // wide viewport is not passing on the torso alone, and the
+                // fingertips of a T-pose. `ARM_HALF_SPAN` is what a
+                // height-only fit gets wrong, and it is why the margin is 1.8.
+                for point in [
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, height, 0.0),
+                    Vec3::new(0.5, height * 0.8, 0.0),
+                    Vec3::new(-0.5, height * 0.8, 0.0),
+                    Vec3::new(height * ARM_HALF_SPAN, height * 0.8, 0.0),
+                    Vec3::new(-height * ARM_HALF_SPAN, height * 0.8, 0.0),
+                ] {
+                    let at = camera
+                        .world_to_screen(point, size)
+                        .expect("the framed body is in front of the eye");
+                    assert!(
+                        at.y >= 0.0 && at.y <= h,
+                        "{point:?} at height {height} fell outside a {w}x{h} widget: {at:?}",
+                    );
+                    assert!(
+                        at.x >= 0.0 && at.x <= w,
+                        "{point:?} at height {height} fell off the side of a \
+                         {w}x{h} widget: {at:?}",
+                    );
+                }
+                assert!(camera.distance > 0.4 && camera.distance < 60.0);
+            }
+        }
+    }
+
+    /// A degenerate height must not produce a NaN view matrix or a camera
+    /// inside the model.
+    #[test]
+    fn framing_a_zero_height_body_is_still_a_usable_camera() {
+        let mut camera = Camera::default();
+        camera.frame_standing(0.0);
+        assert!(camera.view().is_finite());
+        assert!(camera.distance >= 0.4, "{}", camera.distance);
     }
 
     #[test]

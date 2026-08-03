@@ -69,6 +69,17 @@ allow = [
     "Unlicense",
     "BSL-1.0",
     "OFL-1.1",
+    # CC-BY-4.0 (added 2026-08-03): shipped by the avatar bundle, not by any
+    # crate. `assets/avatars/` carries the skin textures and the Monk Skin Tone
+    # Scale under CC BY 4.0, so it is now a licence this project distributes and
+    # the list has to say so. Permissive and GPL-compatible; its only condition
+    # is attribution, which `assets/avatars/LICENSE.md` records as owed and the
+    # about screen discharges. Note the widening is nominal on the Cargo side —
+    # zero crates in either graph are CC-BY-4.0 — but the three lists must agree
+    # (`make licenses-sync`), and the alternative was a list that omits a licence
+    # we ship. If a *crate* ever arrives under CC-BY-4.0, review it on its
+    # merits: CC licences are not written for software.
+    "CC-BY-4.0",
 ]
 
 # A crate whose licence cargo-deny cannot infer from metadata + files scores
@@ -76,17 +87,15 @@ allow = [
 # `[[licenses.clarify]]` entry instead, with the evidence.
 confidence-threshold = 0.93
 
-# Ubuntu-font-1.0 is scoped to the ONE crate that ships an Ubuntu-family font
-# binary, rather than globally allowed. It permits commercial use and
-# redistribution (so it passes the project's rule), but unlike everything in
-# `allow` above its GPL compatibility is not clean — its rename-on-modify
-# clause is why the FSF does not list it as GPL-compatible. It only reaches a
-# shipped binary via `--features debug-overlay`, so the blast radius is the
-# developer overlay, not the product. If that ever changes, drop egui's
-# `default_fonts` feature and supply Inter instead.
-[[licenses.exceptions]]
-name = "epaint_default_fonts"
-allow = ["Ubuntu-font-1.0"]
+# NO per-crate exceptions, deliberately. There was exactly one — egui's bundled
+# fonts, whose licence expression included a font licence that is not cleanly
+# GPL-compatible. It is gone: `egui` is declared `default-features = false` in
+# `ui/Cargo.toml`, which drops its only default feature (`default_fonts`), the
+# crate left the dependency graph, and the exception was deleted rather than
+# narrowed. The overlay supplies its own font instead — Space Mono, OFL-1.1,
+# vendored in `ui/assets/fonts/`, which is already on `allow` above. Keep this
+# section empty: an exception is a licence the allow-list rejects, so adding one
+# needs the same conversation as widening `allow`.
 
 # ---------------------------------------------------------------------------
 # BANS — the wgpu single-version rule lives here as a second line of defence.

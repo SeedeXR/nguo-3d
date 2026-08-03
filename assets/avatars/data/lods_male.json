@@ -1,0 +1,90 @@
+{
+  "sex": "male",
+  "source_tris": 1686890,
+  "tiers": [
+    {
+      "tier": "LOD0",
+      "object": "Nguo_Male_Body_LOD0",
+      "verts": 843443,
+      "tris": 1686890,
+      "area_m2": 2.28633246,
+      "volume_m3": 0.09840593,
+      "decimate_ratio": 1.0,
+      "deviation_from_lod0": {
+        "max_mm": 0.0,
+        "mean_mm": 0.0,
+        "p99_mm": 0.0
+      },
+      "role": "archival master / hero renders"
+    },
+    {
+      "tier": "LOD1",
+      "object": "Nguo_Male_Body_LOD1",
+      "verts": 99998,
+      "tris": 200000,
+      "area_m2": 2.28641692,
+      "volume_m3": 0.09839703,
+      "decimate_ratio": 0.11856138,
+      "area_pct_of_lod0": 100.0037,
+      "volume_pct_of_lod0": 99.991,
+      "deviation_from_lod0": {
+        "max_mm": 0.10686,
+        "mean_mm": 0.01625,
+        "p99_mm": 0.05838
+      },
+      "deviation_lod0_to_tier": {
+        "max_mm": 0.11431,
+        "mean_mm": 0.01364,
+        "p99_mm": 0.05037
+      },
+      "max_influences": 4,
+      "role": "high-quality real-time"
+    },
+    {
+      "tier": "LOD2",
+      "object": "Nguo_Male_Body_LOD2",
+      "verts": 24998,
+      "tris": 50000,
+      "area_m2": 2.28703156,
+      "volume_m3": 0.0983591,
+      "decimate_ratio": 0.02964034,
+      "area_pct_of_lod0": 100.0306,
+      "volume_pct_of_lod0": 99.9524,
+      "deviation_from_lod0": {
+        "max_mm": 0.3311,
+        "mean_mm": 0.06598,
+        "p99_mm": 0.21198
+      },
+      "deviation_lod0_to_tier": {
+        "max_mm": 0.37706,
+        "mean_mm": 0.04932,
+        "p99_mm": 0.17985
+      },
+      "max_influences": 4,
+      "role": "default runtime avatar"
+    },
+    {
+      "tier": "COL",
+      "object": "Nguo_Male_Body_COL",
+      "verts": 7498,
+      "tris": 15000,
+      "area_m2": 2.28907306,
+      "volume_m3": 0.09823706,
+      "decimate_ratio": 0.0088921,
+      "area_pct_of_lod0": 100.1199,
+      "volume_pct_of_lod0": 99.8284,
+      "deviation_from_lod0": {
+        "max_mm": 0.97601,
+        "mean_mm": 0.19899,
+        "p99_mm": 0.63456
+      },
+      "deviation_lod0_to_tier": {
+        "max_mm": 1.26909,
+        "mean_mm": 0.14546,
+        "p99_mm": 0.53578
+      },
+      "max_influences": 4,
+      "role": "cloth collision body"
+    }
+  ]
+}

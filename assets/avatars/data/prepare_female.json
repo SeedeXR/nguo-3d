@@ -1,0 +1,36 @@
+{
+  "sex": "female",
+  "source_file": "/Users/alexmkwizu/Documents/BlenderProjects/Blender_Claude_Experiments/inputs/nguo-3d-avatars/female_character.blend",
+  "source_verts": 791492,
+  "source_tris": 1582978,
+  "source_area_m2": 2.13469002,
+  "had_custom_normals": false,
+  "stray_verts_removed": 5,
+  "stray_faces_removed": 4,
+  "holes_filled": [],
+  "applied_offset_m": [
+    -0.000252,
+    0.0,
+    0.952799
+  ],
+  "fill_faces_added": 0,
+  "final_verts": 791487,
+  "final_tris": 1582974,
+  "final_area_m2": 2.13468997,
+  "final_volume_m3": 0.08439495,
+  "height_m": 1.904768,
+  "arm_span_m": 1.857649,
+  "depth_m": 0.3036,
+  "bbox_min": [
+    -0.928825,
+    -0.154058,
+    0.0
+  ],
+  "bbox_max": [
+    0.928825,
+    0.149542,
+    1.904768
+  ],
+  "shape_max_deviation_m": 8.429369557916289e-08,
+  "custom_normals_kept": false
+}

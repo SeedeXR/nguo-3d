@@ -1,0 +1,423 @@
+{
+  "sex": "female",
+  "reference_clip": "Catwalk Sequence 02.fbx",
+  "reference_height_m": 1.8196684122085571,
+  "height_m": 1.9047675132751465,
+  "bones": 65,
+  "landmarks": {
+    "height_m": 1.904768,
+    "reference_height_m": 1.819668,
+    "crotch_z": 0.925717,
+    "crotch_fraction": 0.486,
+    "Left_foot_length_m": 0.268146,
+    "Left_ankle_z": 0.143715,
+    "Right_foot_length_m": 0.264231,
+    "Right_ankle_z": 0.143715,
+    "Left_armpit_x": 0.20381,
+    "Left_armpit_z": 1.465116,
+    "Left_wrist_x": 0.708731,
+    "Left_fingertip_x": 0.928825,
+    "Left_hand_length_m": 0.220094,
+    "Left_x_ref": 0.883782,
+    "Left_cluster_gap": 0.004,
+    "Left_finger_y_centres": [
+      -0.029139318503439426,
+      0.004493126645684242,
+      0.03523405361920595,
+      0.06013186648488045
+    ],
+    "Left_thumb_cut_y": -0.041139,
+    "Left_Index_tip_x": 0.923782,
+    "Left_Index_length_m": 0.094,
+    "Left_Middle_tip_x": 0.927782,
+    "Left_Middle_length_m": 0.098,
+    "Left_Ring_tip_x": 0.915782,
+    "Left_Ring_length_m": 0.086,
+    "Left_Pinky_tip_x": 0.891782,
+    "Left_Pinky_length_m": 0.062,
+    "Left_thumb_tip": [
+      0.9072,
+      -0.0439,
+      1.4547
+    ],
+    "Left_thumb_reach_m": 0.224989,
+    "Left_thumb_verts": 304,
+    "Right_armpit_x": 0.20381,
+    "Right_armpit_z": 1.466165,
+    "Right_wrist_x": 0.708731,
+    "Right_fingertip_x": 0.928825,
+    "Right_hand_length_m": 0.220094,
+    "Right_x_ref": 0.893782,
+    "Right_cluster_gap": 0.004,
+    "Right_finger_y_centres": [
+      -0.03186359442770481,
+      0.00041424529626965523,
+      0.032394152134656906,
+      0.05844779685139656
+    ],
+    "Right_thumb_cut_y": -0.043864,
+    "Right_Index_tip_x": 0.923782,
+    "Right_Index_length_m": 0.094,
+    "Right_Middle_tip_x": 0.927782,
+    "Right_Middle_length_m": 0.098,
+    "Right_Ring_tip_x": 0.919782,
+    "Right_Ring_length_m": 0.09,
+    "Right_Pinky_tip_x": 0.895782,
+    "Right_Pinky_length_m": 0.066,
+    "Right_thumb_tip": [
+      -0.9078,
+      -0.0456,
+      1.4524
+    ],
+    "Right_thumb_reach_m": 0.226809,
+    "Right_thumb_verts": 502,
+    "joints_clamped_inside": 3,
+    "clamp_max_displacement_m": 0.0049
+  },
+  "joints": {
+    "Hips": [
+      0.0,
+      0.009198,
+      1.091515
+    ],
+    "Spine": [
+      0.0,
+      -0.018791,
+      1.198092
+    ],
+    "Spine1": [
+      0.0,
+      -0.00093,
+      1.301659
+    ],
+    "Spine2": [
+      0.0,
+      -0.005992,
+      1.398178
+    ],
+    "Neck": [
+      0.0,
+      0.056648,
+      1.573411
+    ],
+    "Head": [
+      0.0,
+      -0.014729,
+      1.674088
+    ],
+    "HeadTop_End": [
+      0.0,
+      0.001473,
+      1.904768
+    ],
+    "LeftShoulder": [
+      0.052583,
+      0.041009,
+      1.531955
+    ],
+    "LeftArm": [
+      0.175277,
+      0.072456,
+      1.531955
+    ],
+    "LeftForeArm": [
+      0.442004,
+      0.086454,
+      1.491047
+    ],
+    "LeftHand": [
+      0.708731,
+      0.057404,
+      1.48552
+    ],
+    "RightShoulder": [
+      -0.052583,
+      0.041027,
+      1.531959
+    ],
+    "RightArm": [
+      -0.175277,
+      0.072417,
+      1.531959
+    ],
+    "RightForeArm": [
+      -0.442004,
+      0.086896,
+      1.491147
+    ],
+    "RightHand": [
+      -0.708731,
+      0.057872,
+      1.485526
+    ],
+    "LeftUpLeg": [
+      0.095862,
+      0.024873,
+      1.02084
+    ],
+    "LeftLeg": [
+      0.108937,
+      0.02108,
+      0.582277
+    ],
+    "LeftFoot": [
+      0.129567,
+      0.063434,
+      0.143715
+    ],
+    "LeftToeBase": [
+      0.154958,
+      -0.078977,
+      0.038095
+    ],
+    "LeftToe_End": [
+      0.154958,
+      -0.148695,
+      0.022857
+    ],
+    "RightUpLeg": [
+      -0.09751,
+      0.024873,
+      1.02084
+    ],
+    "RightLeg": [
+      -0.11168,
+      0.019831,
+      0.582277
+    ],
+    "RightFoot": [
+      -0.131555,
+      0.062817,
+      0.143715
+    ],
+    "RightToeBase": [
+      -0.156195,
+      -0.074964,
+      0.038095
+    ],
+    "RightToe_End": [
+      -0.156195,
+      -0.143664,
+      0.022857
+    ],
+    "LeftHandThumb1": [
+      0.772256,
+      0.02499,
+      1.475646
+    ],
+    "LeftHandThumb2": [
+      0.819899,
+      0.00068,
+      1.468241
+    ],
+    "LeftHandThumb3": [
+      0.867543,
+      -0.02363,
+      1.460836
+    ],
+    "LeftHandThumb4": [
+      0.899305,
+      -0.039836,
+      1.455899
+    ],
+    "LeftHandIndex1": [
+      0.829782,
+      -0.014599,
+      1.471337
+    ],
+    "LeftHandIndex2": [
+      0.867382,
+      -0.02681,
+      1.464052
+    ],
+    "LeftHandIndex3": [
+      0.897462,
+      -0.027792,
+      1.456616
+    ],
+    "LeftHandIndex4": [
+      0.923782,
+      -0.013799,
+      1.452841
+    ],
+    "LeftHandMiddle1": [
+      0.829782,
+      0.004271,
+      1.474312
+    ],
+    "LeftHandMiddle2": [
+      0.868982,
+      0.001361,
+      1.468052
+    ],
+    "LeftHandMiddle3": [
+      0.900342,
+      0.001298,
+      1.459562
+    ],
+    "LeftHandMiddle4": [
+      0.927782,
+      -0.006285,
+      1.453207
+    ],
+    "LeftHandRing1": [
+      0.829782,
+      0.033811,
+      1.474712
+    ],
+    "LeftHandRing2": [
+      0.864182,
+      0.030901,
+      1.466123
+    ],
+    "LeftHandRing3": [
+      0.891702,
+      0.034375,
+      1.451571
+    ],
+    "LeftHandRing4": [
+      0.915782,
+      0.032974,
+      1.444151
+    ],
+    "LeftHandPinky1": [
+      0.829782,
+      0.064396,
+      1.4671
+    ],
+    "LeftHandPinky2": [
+      0.854582,
+      0.059467,
+      1.458407
+    ],
+    "LeftHandPinky3": [
+      0.874422,
+      0.059261,
+      1.447284
+    ],
+    "LeftHandPinky4": [
+      0.891782,
+      0.060525,
+      1.441349
+    ],
+    "RightHandThumb1": [
+      -0.772445,
+      0.024766,
+      1.474931
+    ],
+    "RightHandThumb2": [
+      -0.82023,
+      -6.4e-05,
+      1.466985
+    ],
+    "RightHandThumb3": [
+      -0.868015,
+      -0.024894,
+      1.459039
+    ],
+    "RightHandThumb4": [
+      -0.899872,
+      -0.041447,
+      1.453742
+    ],
+    "RightHandIndex1": [
+      -0.829782,
+      -0.01348,
+      1.471809
+    ],
+    "RightHandIndex2": [
+      -0.867382,
+      -0.027462,
+      1.463363
+    ],
+    "RightHandIndex3": [
+      -0.897462,
+      -0.029075,
+      1.454575
+    ],
+    "RightHandIndex4": [
+      -0.923782,
+      -0.01705,
+      1.453049
+    ],
+    "RightHandMiddle1": [
+      -0.829782,
+      -0.001166,
+      1.47455
+    ],
+    "RightHandMiddle2": [
+      -0.868982,
+      -0.000147,
+      1.467829
+    ],
+    "RightHandMiddle3": [
+      -0.900342,
+      -0.000825,
+      1.459553
+    ],
+    "RightHandMiddle4": [
+      -0.927782,
+      -0.008648,
+      1.45284
+    ],
+    "RightHandRing1": [
+      -0.829782,
+      0.032121,
+      1.47487
+    ],
+    "RightHandRing2": [
+      -0.865782,
+      0.029066,
+      1.466839
+    ],
+    "RightHandRing3": [
+      -0.894582,
+      0.032771,
+      1.453465
+    ],
+    "RightHandRing4": [
+      -0.919782,
+      0.02853,
+      1.445193
+    ],
+    "RightHandPinky1": [
+      -0.829782,
+      0.063217,
+      1.468411
+    ],
+    "RightHandPinky2": [
+      -0.856182,
+      0.058688,
+      1.460722
+    ],
+    "RightHandPinky3": [
+      -0.877302,
+      0.05708,
+      1.449371
+    ],
+    "RightHandPinky4": [
+      -0.895782,
+      0.058542,
+      1.442127
+    ]
+  },
+  "measurements": {
+    "hip_height_m": 1.091515,
+    "hip_height_fraction": 0.573043,
+    "wrist_span_m": 1.417462,
+    "femur_m": 0.438774,
+    "tibia_m": 0.441086,
+    "upper_arm_m": 0.270209,
+    "forearm_m": 0.268361,
+    "crotch_height_inseam_m": 0.925717,
+    "crotch_height_fraction": 0.486
+  },
+  "clamped_joints": {
+    "LeftHandIndex1": 0.00324,
+    "RightHandIndex1": 0.0049,
+    "RightHandMiddle2": 0.00171
+  },
+  "approximations": [
+    "Finger joints are the template Mixamo hand scaled by measured hand length; these mannequin hands have closed fingers so per-finger landmarks are not measurable."
+  ]
+}

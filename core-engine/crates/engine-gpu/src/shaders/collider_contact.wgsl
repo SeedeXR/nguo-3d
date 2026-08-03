@@ -4,6 +4,10 @@
 // vertex's diagonal block of `values` (via the assembler's diag offsets). Runs
 // after assemble.wgsl; each vertex owns its own rows → no atomics. Mirrors
 // engine_core::contact::vertex_contact exactly (verified GPU==CPU).
+//
+// BOUND BY: engine-gpu/src/gpu_implicit.rs, sharing assemble.wgsl's `diag_off`
+// from engine_core::SpringAssembler, where -1 is impossible — so the bare
+// `u32(diag_off[...])` below is unguarded by design (see assemble.wgsl's header).
 
 struct CP { n: u32, ncol: u32, dhat: f32, kappa: f32 };
 

@@ -27,7 +27,7 @@ position — the attribution is an obligation, not a courtesy.
 |---|---|
 | `engine-core` | Solver core: sim state, step state machine, CPU physics for both tiers, assemblers, linear solve, contact, strain limiting. No GPU, no I/O. |
 | `engine-gpu` | The `wgpu` device and every compute dispatch. WGSL lives in `crates/engine-gpu/src/shaders/`. Each Rust module owns its shader and its GPU-vs-CPU oracle test. |
-| `engine-api` | Authoring surface: `Scene`, `Object`, `Material`, `SolverConfig`, `FabricPreset`, `auto_drape`. This is what an embedder calls. |
+| `engine-api` | Authoring surface: `Scene`, `Object`, `Material`, `SolverConfig`, `FabricPreset`, `auto_drape`, and `avatar` (body mesh → static collider → drapeable `Scene`). This is what an embedder calls. |
 | `engine-io` | Mesh and sequence I/O: OBJ, STL, glTF/GLB, COLLADA, USDA, FBX, plus the binary golden-capture reader. |
 | `engine-cli` | `mguso`, the headless runner. Thin — argument parsing, logging setup, JSON on stdout. |
 
@@ -92,16 +92,34 @@ If you add a subcommand, it obeys all three or it does not merge.
 | Integration | `crates/*/tests/*.rs` | Whole readers and whole scenes through the public API. |
 | Regression / golden | `engine-api/tests/regression.rs` + `engine-api/tests/golden/` | Committed golden oracles. This is the tier that catches "the physics changed and nobody noticed". |
 
-Two integration tests are **gated on data that is not in the repository** and
-skip loudly when it is absent: `engine-io/tests/golden_file.rs` (the reference
-capture, `PPF_GAUGE_DIR`) and `engine-io/tests/samples.rs` (the garment sample
-corpus, `NGUO_SAMPLES_DIR`). A clean clone runs neither. They still *report* as
-passing, because skipping is the defined behaviour — so a green suite in a clean
-clone covers strictly fewer assertions than the same suite with the data
-present. Read the skip messages on stderr.
+Three integration tests are **gated on data outside this workspace** and skip
+loudly when it is absent: `engine-io/tests/golden_file.rs` (the reference
+capture, `PPF_GAUGE_DIR`), `engine-io/tests/samples.rs` (the garment sample
+corpus, `NGUO_SAMPLES_DIR`) and `engine-api/tests/avatar_bundle.rs` (the avatar
+bundle at `../../../assets/avatars`, 227 MB behind git-LFS). A clean clone runs
+none of them. They still *report* as passing, because skipping is the defined
+behaviour — so a green suite in a clean clone covers strictly fewer assertions
+than the same suite with the data present. Read the skip messages on stderr.
+
+**`avatar_bundle.rs` has a switch that removes the ambiguity:**
+`MGUSO_REQUIRE_AVATAR_BUNDLE=1` turns its skip into a failure, so a silently
+vanished asset cannot quietly disable the file. Set it on any machine that has
+the bundle. The repo-root `make test-avatars` sets it and additionally refuses to
+run without a bundle; that is the gate to use, and CI has a dedicated job for it
+(`ui/docs/CI.md` §8b). Its skip notice is written to fd 2 directly rather than
+through `eprintln!`, because libtest's capture swallows the print macros unless
+the test fails.
 
 A handful of tests are `#[ignore]`d with a reason string naming the open
-problem. Read the reason before assuming a test is dead weight.
+problem. Read the reason before assuming a test is dead weight. One of them is
+load-bearing documentation: `avatar_bundle.rs::collision_proxy_step_cost` is the
+benchmark that measured **9.410 s/step** (male) and **12.533 s/step** (female)
+for a whole 15 000-triangle body proxy against **0.068 s/step** with
+self-collision off — i.e. the body's own triangles are the entire cost. Run it
+with `cargo test -p engine-api --test avatar_bundle --release -- --ignored
+--nocapture`. See `engine_api::avatar`'s module docs for what that implies (a
+static mesh collider in `engine-core`/`engine-gpu` is the fix and is not written)
+and `ui/docs/AVATARS.md` §5.
 
 ## 6. Determinism is a feature, not a side effect
 
@@ -167,10 +185,16 @@ hand-roll the commands. (Note: the workflows exist but have not executed yet —
 see the status section of `../README.md`.)
 
 ```sh
-make ci     # fmt + clippy + check-wgpu + test + licenses. No GPU needed.
-make gpu    # adapter smoke test + the 10x determinism gate. Needs a real GPU.
-make help   # every target
+make ci            # fmt + clippy + check-wgpu + test + licenses. No GPU needed.
+make gpu           # adapter smoke test + the 10x determinism gate. Needs a real GPU.
+make test-avatars  # the avatar suites with skips turned into failures. Needs the bundle.
+make help          # every target
 ```
+
+`test-avatars` is deliberately outside `make ci`: the avatar bundle is 227 MB
+behind git-LFS and `make ci` must stay runnable on a clone made without it.
+`make test` prints whether the bundle is present before running, so a
+bundle-less run cannot hide its skips.
 
 `make ci` must be clean before you call anything done: `cargo fmt --all
 --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and

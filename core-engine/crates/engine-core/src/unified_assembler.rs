@@ -133,6 +133,15 @@ impl UnifiedAssembler {
                 }
             }
         }
+        // Never `-1`: the loop above pushes a diagonal block for every vertex before
+        // any element is seen, and `from_triplets` never prunes a column. The free
+        // path of `unified_gather.wgsl` casts this unguarded — see
+        // `assembler.rs::SpringAssembler::new` for the full argument.
+        debug_assert!(
+            diag_off.iter().all(|&o| o >= 0),
+            "diag_off holds -1: the structure lost a diagonal block; \
+             unified_gather.wgsl indexes it unguarded and would store out of bounds"
+        );
 
         // Spring incidence + off-diagonal offsets.
         let mut s_inc: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];

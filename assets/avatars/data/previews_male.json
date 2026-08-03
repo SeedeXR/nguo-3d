@@ -1,0 +1,20 @@
+{
+  "sex": "male",
+  "files": [
+    "previews/male_hero.png",
+    "previews/male_orthos.png",
+    "previews/male_tones.png",
+    "previews/male_lods.png",
+    "previews/male_walk.png"
+  ],
+  "walk_clip": "f_Catwalk_Walk",
+  "walk_frames": [
+    1,
+    76,
+    152,
+    228,
+    303,
+    379
+  ],
+  "engine": "BLENDER_EEVEE"
+}

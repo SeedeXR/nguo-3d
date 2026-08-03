@@ -1,0 +1,351 @@
+{
+  "standard": "Monk Skin Tone Scale (10 shades), Ellis Monk / Google",
+  "standard_url": "https://skintone.google",
+  "standard_licence": "CC BY 4.0",
+  "resolution": 2048,
+  "bit_depth": 8,
+  "tiling": true,
+  "tile_metres": 0.2,
+  "uv_layer": "UVMap",
+  "neutral_albedo": "textures/skin/shared/skin_albedo_neutral.png",
+  "neutral_albedo_mean_linear_luminance": 0.933748,
+  "how_to_use": {
+    "recommended": "Use shared/skin_albedo_neutral.png and set glTF pbrMetallicRoughness.baseColorFactor (or Unity _Color) to the tone's base_color_factor. No texture reload.",
+    "drop_in": "Use the tone's baked_albedo and leave baseColorFactor white."
+  },
+  "shared_maps": {
+    "albedo_neutral": "textures/skin/shared/skin_albedo_neutral.png",
+    "normal_opengl": "textures/skin/shared/skin_normal_ogl.png",
+    "normal_directx": "textures/skin/shared/skin_normal_dx.png",
+    "roughness": "textures/skin/shared/skin_roughness.png",
+    "ambient_occlusion": "textures/skin/shared/skin_ao.png",
+    "height": "textures/skin/shared/skin_height.png",
+    "subsurface": "textures/skin/shared/skin_subsurface.png"
+  },
+  "unity_maps": {
+    "metallic_smoothness": "textures/skin/unity/skin_metallicSmoothness.png",
+    "normal": "textures/skin/unity/skin_normal.png",
+    "note": "Unity expects OpenGL-style (green-up) normal maps."
+  },
+  "material_constants": {
+    "metallic": 0.0,
+    "ior": 1.44,
+    "specular": 0.5
+  },
+  "roughness_range": [
+    0.35,
+    0.75
+  ],
+  "tones": [
+    {
+      "key": "MST01",
+      "name": "Porcelain",
+      "undertone": "cool",
+      "monk_scale_hex": "#f6ede4",
+      "hex": "#f6ede5",
+      "base_color_srgb": [
+        0.964706,
+        0.930071,
+        0.899765
+      ],
+      "base_color_linear": [
+        0.921582,
+        0.848234,
+        0.786947
+      ],
+      "linear_luminance": 0.859403,
+      "base_color_factor": [
+        0.98697,
+        0.908418,
+        0.842783,
+        1.0
+      ],
+      "baked_albedo": "textures/skin/tones/skin_albedo_MST01.png",
+      "subsurface_weight": 0.3302,
+      "subsurface_color_linear": [
+        1.0,
+        0.356258,
+        0.236084
+      ]
+    },
+    {
+      "key": "MST02",
+      "name": "Ivory",
+      "undertone": "neutral",
+      "monk_scale_hex": "#f3e7db",
+      "hex": "#f3e7db",
+      "base_color_srgb": [
+        0.952941,
+        0.905882,
+        0.858824
+      ],
+      "base_color_linear": [
+        0.896269,
+        0.799103,
+        0.708376
+      ],
+      "linear_luminance": 0.81321,
+      "base_color_factor": [
+        0.959862,
+        0.855801,
+        0.758637,
+        1.0
+      ],
+      "baked_albedo": "textures/skin/tones/skin_albedo_MST02.png",
+      "subsurface_weight": 0.3152,
+      "subsurface_color_linear": [
+        0.996269,
+        0.335623,
+        0.212513
+      ]
+    },
+    {
+      "key": "MST03",
+      "name": "Cream",
+      "undertone": "warm",
+      "monk_scale_hex": "#f7ead0",
+      "hex": "#f7ebce",
+      "base_color_srgb": [
+        0.968627,
+        0.921343,
+        0.80651
+      ],
+      "base_color_linear": [
+        0.930111,
+        0.83031,
+        0.61492
+      ],
+      "linear_luminance": 0.835976,
+      "base_color_factor": [
+        0.996104,
+        0.889222,
+        0.65855,
+        1.0
+      ],
+      "baked_albedo": "textures/skin/tones/skin_albedo_MST03.png",
+      "subsurface_weight": 0.3226,
+      "subsurface_color_linear": [
+        1.0,
+        0.34873,
+        0.184476
+      ]
+    },
+    {
+      "key": "MST04",
+      "name": "Beige",
+      "undertone": "neutral",
+      "monk_scale_hex": "#eadaba",
+      "hex": "#eadaba",
+      "base_color_srgb": [
+        0.917647,
+        0.854902,
+        0.729412
+      ],
+      "base_color_linear": [
+        0.822786,
+        0.701102,
+        0.491021
+      ],
+      "linear_luminance": 0.711804,
+      "base_color_factor": [
+        0.881164,
+        0.750847,
+        0.52586,
+        1.0
+      ],
+      "baked_albedo": "textures/skin/tones/skin_albedo_MST04.png",
+      "subsurface_weight": 0.2821,
+      "subsurface_color_linear": [
+        0.922786,
+        0.294463,
+        0.147306
+      ]
+    },
+    {
+      "key": "MST05",
+      "name": "Golden",
+      "undertone": "warm",
+      "monk_scale_hex": "#d7bd96",
+      "hex": "#d7be93",
+      "base_color_srgb": [
+        0.843137,
+        0.745,
+        0.57549
+      ],
+      "base_color_linear": [
+        0.679542,
+        0.514766,
+        0.290685
+      ],
+      "linear_luminance": 0.533619,
+      "base_color_factor": [
+        0.727758,
+        0.55129,
+        0.311309,
+        1.0
+      ],
+      "baked_albedo": "textures/skin/tones/skin_albedo_MST05.png",
+      "subsurface_weight": 0.224,
+      "subsurface_color_linear": [
+        0.779542,
+        0.216202,
+        0.087205
+      ]
+    },
+    {
+      "key": "MST06",
+      "name": "Olive Bronze",
+      "undertone": "olive",
+      "monk_scale_hex": "#a07e56",
+      "hex": "#a0855a",
+      "base_color_srgb": [
+        0.627451,
+        0.520303,
+        0.354667
+      ],
+      "base_color_linear": [
+        0.351533,
+        0.233317,
+        0.103283
+      ],
+      "linear_luminance": 0.249061,
+      "base_color_factor": [
+        0.376475,
+        0.249871,
+        0.110611,
+        1.0
+      ],
+      "baked_albedo": "textures/skin/tones/skin_albedo_MST06.png",
+      "subsurface_weight": 0.1312,
+      "subsurface_color_linear": [
+        0.451533,
+        0.097993,
+        0.030985
+      ]
+    },
+    {
+      "key": "MST07",
+      "name": "Amber Brown",
+      "undertone": "warm",
+      "monk_scale_hex": "#825c43",
+      "hex": "#825c40",
+      "base_color_srgb": [
+        0.509804,
+        0.361247,
+        0.252863
+      ],
+      "base_color_linear": [
+        0.223228,
+        0.107309,
+        0.05203
+      ],
+      "linear_luminance": 0.127962,
+      "base_color_factor": [
+        0.239067,
+        0.114923,
+        0.055721,
+        1.0
+      ],
+      "baked_albedo": "textures/skin/tones/skin_albedo_MST07.png",
+      "subsurface_weight": 0.0917,
+      "subsurface_color_linear": [
+        0.323228,
+        0.04507,
+        0.015609
+      ]
+    },
+    {
+      "key": "MST08",
+      "name": "Umber",
+      "undertone": "neutral",
+      "monk_scale_hex": "#604134",
+      "hex": "#604134",
+      "base_color_srgb": [
+        0.376471,
+        0.254902,
+        0.203922
+      ],
+      "base_color_linear": [
+        0.116971,
+        0.052861,
+        0.03434
+      ],
+      "linear_luminance": 0.065153,
+      "base_color_factor": [
+        0.12527,
+        0.056611,
+        0.036776,
+        1.0
+      ],
+      "baked_albedo": "textures/skin/tones/skin_albedo_MST08.png",
+      "subsurface_weight": 0.0712,
+      "subsurface_color_linear": [
+        0.216971,
+        0.022201,
+        0.010302
+      ]
+    },
+    {
+      "key": "MST09",
+      "name": "Deep Espresso",
+      "undertone": "cool",
+      "monk_scale_hex": "#3a312a",
+      "hex": "#3a312b",
+      "base_color_srgb": [
+        0.227451,
+        0.190557,
+        0.167216
+      ],
+      "base_color_linear": [
+        0.042311,
+        0.030238,
+        0.023793
+      ],
+      "linear_luminance": 0.03234,
+      "base_color_factor": [
+        0.045314,
+        0.032384,
+        0.025481,
+        1.0
+      ],
+      "baked_albedo": "textures/skin/tones/skin_albedo_MST09.png",
+      "subsurface_weight": 0.0605,
+      "subsurface_color_linear": [
+        0.142311,
+        0.0127,
+        0.007138
+      ]
+    },
+    {
+      "key": "MST10",
+      "name": "Rich Ebony",
+      "undertone": "neutral",
+      "monk_scale_hex": "#292420",
+      "hex": "#292420",
+      "base_color_srgb": [
+        0.160784,
+        0.140784,
+        0.124784
+      ],
+      "base_color_linear": [
+        0.022174,
+        0.017557,
+        0.014309
+      ],
+      "linear_luminance": 0.018304,
+      "base_color_factor": [
+        0.023747,
+        0.018803,
+        0.015324,
+        1.0
+      ],
+      "baked_albedo": "textures/skin/tones/skin_albedo_MST10.png",
+      "subsurface_weight": 0.056,
+      "subsurface_color_linear": [
+        0.122174,
+        0.007374,
+        0.004293
+      ]
+    }
+  ]
+}

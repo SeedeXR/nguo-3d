@@ -98,7 +98,17 @@ impl SpringAssembler {
         }
         let structure = CsrMatrix::from_triplets(ndof, &trips);
 
-        // Diagonal offsets.
+        // Diagonal offsets. `-1` is the "not found" value of `find_col`, but it can
+        // never survive here: the structure loop above pushes a diagonal block for
+        // EVERY vertex — pinned `(3i+c,3i+c)`, free the full 3×3 at `(3i+r,3i+c)` —
+        // unconditionally, before any spring is looked at, and
+        // `CsrMatrix::from_triplets` coalesces duplicate columns but never prunes a
+        // column (not even a zero one). So the column `find_col` asks for is always
+        // present, for an isolated vertex, a fully pinned mesh or `n == 0` alike.
+        // Both `assemble` below and `shaders/{assemble,unified_gather,
+        // collider_contact}.wgsl` cast these offsets unguarded (`u32(-1)` would be a
+        // 4 GiB-out-of-bounds store on the GPU), so the invariant is asserted, not
+        // guarded — a guard would silently hide a structure regression.
         let mut diag_off = vec![-1i32; ndof];
         for i in 0..n {
             if pinned[i] {
@@ -111,6 +121,11 @@ impl SpringAssembler {
                 }
             }
         }
+        debug_assert!(
+            diag_off.iter().all(|&o| o >= 0),
+            "diag_off holds -1: the structure lost a diagonal block; \
+             assemble.wgsl indexes it unguarded and would store out of bounds"
+        );
 
         // Per-vertex incident-spring adjacency + off-diagonal offsets.
         let mut incident: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
@@ -283,6 +298,71 @@ mod tests {
             }
         }
         CsrMatrix::from_triplets(ndof, &trips)
+    }
+
+    /// `diag_off` is cast unguarded by `assemble` below and by
+    /// `shaders/{assemble,collider_contact}.wgsl`, where `u32(-1)` would be an
+    /// out-of-bounds GPU store. Pin the "never -1" invariant on the topologies
+    /// most likely to break it, and check each offset really does address the
+    /// 3-wide run the kernels read past it.
+    #[test]
+    fn diag_off_is_never_negative() {
+        let verts = vec![
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::Y,
+            Vec3::new(5.0, 5.0, 5.0), // isolated: in no triangle, no spring
+        ];
+        let mesh = || Mesh::new(verts.clone(), vec![[0, 1, 2]]);
+
+        let mut all_pinned = SimState::from_mesh(&mesh(), 0.1);
+        for i in 0..all_pinned.vertex_count() {
+            all_pinned.pin(i);
+        }
+        let mut degenerate = SimState::from_mesh(&mesh(), 0.1);
+        // Duplicate edge, self-loops on a free and on an isolated vertex.
+        degenerate.stretch.push(crate::state::StretchConstraint {
+            a: 0,
+            b: 1,
+            rest_len: 1.0,
+        });
+        for v in [2u32, 3] {
+            degenerate.stretch.push(crate::state::StretchConstraint {
+                a: v,
+                b: v,
+                rest_len: 0.0,
+            });
+        }
+        degenerate.pin(1);
+
+        let cases = [
+            ("empty", SimState::default()),
+            ("isolated vertex", SimState::from_mesh(&mesh(), 0.1)),
+            ("fully pinned", all_pinned),
+            ("duplicate + degenerate springs", degenerate),
+        ];
+        for (name, state) in &cases {
+            let asm = SpringAssembler::new(state);
+            for i in 0..asm.n {
+                for r in 0..3 {
+                    let off = asm.diag_off[3 * i + r];
+                    assert!(off >= 0, "{name}: diag_off[{}] is -1", 3 * i + r);
+                    // Pinned rows hold the single entry (3i+r,3i+r); free rows the
+                    // 3-run 3i..3i+2 that the kernels write as base, base+1, base+2.
+                    let cols = &asm.structure.col_idx;
+                    if asm.pinned[i] {
+                        assert_eq!(cols[off as usize] as usize, 3 * i + r, "{name}");
+                    } else {
+                        for c in 0..3 {
+                            assert_eq!(cols[off as usize + c] as usize, 3 * i + c, "{name}");
+                        }
+                    }
+                }
+            }
+            // And the unguarded casts in `assemble` stay in bounds.
+            let x = state.positions.clone();
+            asm.assemble(&x, &x, 1.0e4, 1000.0);
+        }
     }
 
     #[test]

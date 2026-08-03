@@ -1,0 +1,62 @@
+{
+  "sex": "female",
+  "default_tone": "MST05",
+  "material": "Nguo_Female_Skin",
+  "occlusion_wired": true,
+  "blend": "blend/nguo_female.blend",
+  "glb": {
+    "runtime": {
+      "file": "avatars/glb/nguo_female.glb",
+      "mb": 24.902,
+      "vertices": 31490,
+      "triangles": 49998,
+      "animations": 19,
+      "images": 3
+    },
+    "lod1": {
+      "file": "avatars/glb/nguo_female_lod1.glb",
+      "mb": 32.052,
+      "vertices": 115654,
+      "triangles": 199998,
+      "animations": 19,
+      "images": 3
+    },
+    "lod0": {
+      "file": "avatars/glb/nguo_female_lod0.glb",
+      "mb": 74.015,
+      "vertices": 830914,
+      "triangles": 1582974,
+      "animations": 19,
+      "images": 0
+    },
+    "collision": {
+      "file": "avatars/glb/nguo_female_collision.glb",
+      "mb": 5.887,
+      "vertices": 10531,
+      "triangles": 15000,
+      "animations": 19,
+      "images": 0
+    }
+  },
+  "animation_names": [
+    "f_Catwalk_Sequence_02",
+    "f_Catwalk_Sequence_05",
+    "f_Catwalk_Walk",
+    "f_Catwalk_Walk_Forward",
+    "f_Catwalk_Walk_Stop",
+    "f_Catwalk_Walk_Stop_Twist_L",
+    "f_Catwalk_Walking",
+    "f_Female_Start_Walking",
+    "f_Female_Stop_Walking",
+    "f_Female_Walk",
+    "m_Catwalk_Idle_To_Walk_Forward",
+    "m_Catwalk_Idle_Twist_L",
+    "m_Catwalk_Twist_L_To_Twist_R",
+    "m_Catwalk_Walk_Forward_02",
+    "m_Catwalk_Walk_Forward_03",
+    "m_Catwalk_Walk_Forward_Arc_90R",
+    "m_Catwalk_Walk_Forward_Turn_90R",
+    "m_Catwalk_Walk_Stop",
+    "m_Catwalk_Walk_Stop_Twist_L"
+  ]
+}

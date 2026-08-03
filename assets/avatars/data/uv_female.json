@@ -1,0 +1,37 @@
+{
+  "sex": "female",
+  "unwrap_seconds": 10.09,
+  "angle_limit_deg": 85.0,
+  "island_margin": 0.0005,
+  "islands": 4454,
+  "surface_area_m2": 2.13468997,
+  "skin_tile_metres": 0.2,
+  "tiling_uv_scale": 11.259249,
+  "atlas": {
+    "uv_area_total": 0.4171490834009721,
+    "degenerate_uv_tris": 0,
+    "density_uv_per_m": {
+      "p1": 0.38002621655483376,
+      "p50": 0.44407936968839845,
+      "p99": 0.472545268280537
+    },
+    "stretch_p99_over_p50": 1.0641009254992244,
+    "stretch_p50_over_p1": 1.1685493009251968
+  },
+  "tiling": {
+    "uv_area_total": 52.882272382376456,
+    "degenerate_uv_tris": 0,
+    "density_uv_per_m": {
+      "p1": 4.2788309174083174,
+      "p50": 4.9999997017177105,
+      "p99": 5.320500056692572
+    },
+    "stretch_p99_over_p50": 1.0641000748189557,
+    "stretch_p50_over_p1": 1.1685434171692402
+  },
+  "uv_layers": [
+    "UVMap",
+    "UVMap_Atlas"
+  ],
+  "render_uv_layer": "UVMap"
+}

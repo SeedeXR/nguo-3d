@@ -41,21 +41,22 @@ identifies *who made it*.
   update those references — the build will fail loudly rather than silently, by
   design.
 
-**Two things the maintainer should confirm, recorded here rather than assumed**
+**Authorship**
 
-1. **Exact terms for the brand assets.** "All rights reserved" is what the
-   splash screen says; whether Seede XR wishes to grant any reuse right (for
-   example, allowing the mark in unmodified redistributions) is a decision that
-   has not been written down anywhere in this tree. Until it is, downstream
-   users have no stated permission at all.
-2. **The MidJourney component of the splash artwork.** Rights in
-   AI-generated imagery depend on the generating service's terms at the time of
-   generation, and in some jurisdictions on whether the output attracts
-   copyright at all. This has **not been verified** by anyone working in this
-   repository, and nothing here should be read as a legal conclusion. If the
-   artwork is ever used commercially or in marketing, confirm the position with
-   the applicable MidJourney terms first.
+The splash artwork was **created by Alex Mkwizu**, who used MidJourney as a tool
+in producing it, and is held by **Seede XR**. MidJourney is credited on the
+splash screen as the tool used, in the same spirit that a photograph credits
+neither its camera nor its editing software as a co-author. The butterfly mark
+is likewise original Seede XR work.
 
-Neither point blocks development or the GPL status of the code. Both should be
-settled before a public release, because a brand asset with no stated terms is
-the one file in the tree a downstream user cannot safely do anything with.
+**One item still open for the maintainer**
+
+The reuse terms are currently "all rights reserved", which is what the splash
+screen states. Whether Seede XR wishes to grant any narrower permission — for
+example, allowing the mark to appear in unmodified redistributions of nguo-3d,
+which most trademark-reserving free-software projects do allow — has not been
+written down. Until it is, downstream users have no stated permission at all,
+and a brand asset with no stated terms is the one thing in the tree a
+distributor cannot safely act on.
+
+This does not block development or affect the GPL status of the code.

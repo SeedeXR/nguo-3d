@@ -1,0 +1,56 @@
+{
+  "sex": "female",
+  "frame_step": 5,
+  "source": "07_female_lod.blend",
+  "gate_max_growth_ratio": 5.0,
+  "posed_proxy_deviation": {
+    "max_mm": 2.0117,
+    "at": "f_Catwalk_Walk@51"
+  },
+  "tiers": [
+    {
+      "tier": "Nguo_Female_Body_COL",
+      "verts": 7500,
+      "median_edge_mm": 18.3815,
+      "max_growth_over_median": 1.6047,
+      "max_growth_mm": 29.4973,
+      "mean_growth_over_median": 0.003788,
+      "worst_frame_edges_over_5x": 0,
+      "worst_action": "f_Catwalk_Walk",
+      "worst_frame": 21
+    },
+    {
+      "tier": "Nguo_Female_Body_LOD0",
+      "verts": 791487,
+      "median_edge_mm": 1.955,
+      "max_growth_over_median": 2.2859,
+      "max_growth_mm": 4.4688,
+      "mean_growth_over_median": 0.001942,
+      "worst_frame_edges_over_5x": 0,
+      "worst_action": "f_Catwalk_Walking",
+      "worst_frame": 31
+    },
+    {
+      "tier": "Nguo_Female_Body_LOD1",
+      "verts": 99999,
+      "median_edge_mm": 4.9818,
+      "max_growth_over_median": 2.8949,
+      "max_growth_mm": 14.422,
+      "mean_growth_over_median": 0.003508,
+      "worst_frame_edges_over_5x": 0,
+      "worst_action": "f_Catwalk_Walking",
+      "worst_frame": 1
+    },
+    {
+      "tier": "Nguo_Female_Body_LOD2",
+      "verts": 24999,
+      "median_edge_mm": 10.0986,
+      "max_growth_over_median": 1.9957,
+      "max_growth_mm": 20.1541,
+      "mean_growth_over_median": 0.003812,
+      "worst_frame_edges_over_5x": 0,
+      "worst_action": "f_Catwalk_Walk",
+      "worst_frame": 416
+    }
+  ]
+}

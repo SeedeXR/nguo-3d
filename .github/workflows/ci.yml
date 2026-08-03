@@ -76,6 +76,12 @@ jobs:
   # 4 targets failing as of 2026-08-01). That is deliberate: CI must not
   # pretend the suite is green.
   # -------------------------------------------------------------------------
+  #
+  # NOTE ON AVATAR COVERAGE: this job checks out WITHOUT LFS, so
+  # `assets/avatars/` is absent and the avatar suites SKIP. That is deliberate —
+  # see the `avatars` job below, which is the only place that pays the 227 MB
+  # LFS download. `make test` depends on `make avatar-bundle`, so the skip is
+  # printed at the top of this job's log instead of being silent.
   test:
     name: cargo test (both workspaces)
     runs-on: macos-15
@@ -88,6 +94,83 @@ jobs:
             ui
           key: test
       - run: make test
+
+  # -------------------------------------------------------------------------
+  # Avatar coverage. Its own job for one reason: the bundle is 227 MB behind
+  # git-LFS.
+  #
+  # `actions/checkout` does NOT fetch LFS objects by default — it needs
+  # `lfs: true`, which runs `git lfs fetch/checkout` after the clone. Without
+  # it the working tree gets ~130-byte pointer TEXT files in place of the GLBs.
+  # Those would not be "missing", so the bundle-gated tests would not skip
+  # either; they would fail inside the glTF reader. The loud typed failure is
+  # `AvatarError::MeshLoad`, which is exactly what we want if LFS ever breaks.
+  #
+  # WHY NOT `lfs: true` EVERYWHERE: five jobs × 227 MB per push, on a metered
+  # LFS bandwidth allowance, to make four jobs' worth of tests skip for the
+  # third time. One job pays it. The rest deliberately run bundle-less, which
+  # also keeps "does the app degrade gracefully with no bundle?" continuously
+  # tested rather than asserted.
+  #
+  # HONESTY ABOUT WHAT THIS COVERS TODAY: `assets/avatars/` is NOT yet tracked
+  # in git (verified 2026-08-03: `git ls-files assets | wc -l` = 0, and
+  # `git lfs ls-files` is empty). So on the first push this job will find no
+  # bundle and report **NOT RUN** — loudly, in the job summary — instead of
+  # passing quietly as if it had tested something. It is listed as ADVISORY in
+  # ui/docs/CI.md §2 until the bundle is committed, precisely so that no
+  # coverage is claimed that did not run.
+  #
+  # TO MAKE IT BLOCKING once the bundle is committed: delete the `if` around
+  # the last step and the whole `Bundle presence` step, leaving `make
+  # test-avatars` unconditional (it already fails on a missing bundle), then add
+  # `avatars` to the branch-protection required-checks list.
+  # -------------------------------------------------------------------------
+  avatars:
+    name: avatar bundle coverage
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true # the ONLY checkout in this repo's CI that fetches LFS
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core-engine
+            ui
+          key: test # share the test job's cache; same compilation
+
+      # Two separate questions, and conflating them is how a vacuous green tick
+      # happens: (1) is the bundle in the repository at all, (2) did LFS give us
+      # real bytes. `make avatar-bundle` answers (2)-ish by reporting the size;
+      # `git ls-files` answers (1) and needs no LFS.
+      - name: Bundle presence
+        id: bundle
+        run: |
+          tracked=$(git ls-files assets/avatars | wc -l | tr -d ' ')
+          echo "tracked=$tracked" >> "$GITHUB_OUTPUT"
+          make avatar-bundle
+          {
+            if [ "$tracked" -eq 0 ]; then
+              echo "### ⚠ AVATAR COVERAGE: **NOT RUN**"
+              echo
+              echo "\`assets/avatars/\` is not tracked in this repository"
+              echo "(\`git ls-files assets/avatars\` = 0 files), so there is nothing"
+              echo "for \`lfs: true\` to fetch and the 13 bundle-gated tests cannot run."
+              echo
+              echo "**No avatar coverage exists in CI until the bundle is committed.**"
+            else
+              echo "### AVATAR COVERAGE: bundle tracked ($tracked files)"
+              echo
+              echo "Running \`make test-avatars\` — a skip is a FAILURE in that target."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # `make test-avatars` sets MGUSO_REQUIRE_AVATAR_BUNDLE=1 and refuses to
+      # run without a bundle, so a skip cannot masquerade as a pass here.
+      - name: Avatar suites (skips are failures)
+        if: steps.bundle.outputs.tracked != '0'
+        run: make test-avatars
 
   # -------------------------------------------------------------------------
   # Real GPU work. macOS runners expose a Metal-capable adapter (Apple

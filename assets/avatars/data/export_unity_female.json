@@ -1,0 +1,70 @@
+{
+  "sex": "female",
+  "fbx": {
+    "runtime": {
+      "file": "avatars/unity/nguo_female.fbx",
+      "mb": 17.336,
+      "tris": 49998,
+      "bones": 65,
+      "actions": 19,
+      "meshes": [
+        "Nguo_Female_Body_LOD2"
+      ]
+    },
+    "lod1": {
+      "file": "avatars/unity/nguo_female_lod1.fbx",
+      "mb": 23.577,
+      "tris": 199998,
+      "bones": 65,
+      "actions": 19,
+      "meshes": [
+        "Nguo_Female_Body_LOD1"
+      ]
+    },
+    "collision": {
+      "file": "avatars/unity/nguo_female_collision.fbx",
+      "mb": 15.84,
+      "tris": 15000,
+      "bones": 65,
+      "actions": 19,
+      "meshes": [
+        "Nguo_Female_Body_COL"
+      ]
+    }
+  },
+  "textures": [
+    "skin_metallicSmoothness.png",
+    "skin_normal.png",
+    "skin_ao.png",
+    "skin_height.png",
+    "skin_albedo_neutral.png",
+    "skin_albedo_MST01.png",
+    "skin_albedo_MST02.png",
+    "skin_albedo_MST03.png",
+    "skin_albedo_MST04.png",
+    "skin_albedo_MST05.png",
+    "skin_albedo_MST06.png",
+    "skin_albedo_MST07.png",
+    "skin_albedo_MST08.png",
+    "skin_albedo_MST09.png",
+    "skin_albedo_MST10.png"
+  ],
+  "fbx_settings": {
+    "axis_forward": "-Z",
+    "axis_up": "Y",
+    "global_scale": 1.0,
+    "add_leaf_bones": false,
+    "primary_bone_axis": "Y",
+    "secondary_bone_axis": "X",
+    "bake_anim_use_all_actions": true
+  },
+  "unity_import": {
+    "rig_animation_type": "Humanoid",
+    "avatar_definition": "Create From This Model",
+    "note": "Mixamo bone names auto-map to Unity's Humanoid rig.",
+    "skin_weights": "Standard (4 bones) is sufficient - the meshes carry at most 4 influences per vertex.",
+    "normal_maps": "skin_normal.png is OpenGL-style (green up), which is what Unity expects. Set Texture Type = Normal map.",
+    "data_maps": "Set sRGB (Color Texture) OFF for metallicSmoothness, AO and height.",
+    "material": "Standard shader: Albedo = a skin_albedo_MST*.png, Metallic = skin_metallicSmoothness.png (metallic in R, smoothness in A), Normal = skin_normal.png, Occlusion = skin_ao.png."
+  }
+}

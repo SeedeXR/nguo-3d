@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-avatar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Typed access to the nguo avatar bundle: manifest, catalogue, geometry tiers, Monk skin tones and the bundle's own body measurements."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+# Length is the canonical millimetre type for the whole app (nguo-measure §
+# "Canonical unit"); measurements return it rather than inventing a second one.
+nguo-measure = { workspace = true }
+# Mesh loading. engine-io already dispatches .glb -> load_gltf and pulls no
+# GPU crates, so the measurement rig runs headless.
+engine-io = { workspace = true }
+engine-api = { workspace = true }

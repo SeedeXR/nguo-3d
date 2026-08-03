@@ -17,6 +17,7 @@ debug-overlay = ["dep:nguo-app-debug", "nguo-registry/debug-overlay"]
 
 [dependencies]
 nguo-gpu = { workspace = true }
+nguo-avatar = { workspace = true }
 nguo-canvas = { workspace = true }
 nguo-viewport3d = { workspace = true }
 nguo-doc = { workspace = true }

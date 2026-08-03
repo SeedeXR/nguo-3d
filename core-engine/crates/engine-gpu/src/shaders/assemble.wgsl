@@ -5,6 +5,17 @@
 // rows, so NO atomics (core WebGPU has no float atomics; see docs/DEVELOPING.md §6). This
 // mirrors engine_core::assembler::SpringAssembler::assemble one-to-one; the CPU
 // version is the verification oracle. Offsets are absolute indices into `values`.
+//
+// BOUND BY: engine-gpu/src/assemble.rs + gpu_implicit.rs, fed from
+// engine_core::SpringAssembler (NOT Gather3/Gather4 — the near-identical
+// gather4.wgsl / membrane_gather.wgsl / unified_gather.wgsl serve a different
+// assembler; read the header of each before assuming they share a contract).
+// SENTINELS: `adj_off` CAN be -1 (off-diagonal block dropped because the
+// neighbour is pinned) and IS guarded below. `diag_off` can NOT: SpringAssembler
+// pushes a diagonal block for every vertex unconditionally, so the two casts
+// `u32(diag_off[...])` are safe by construction, asserted (not guarded) on the
+// CPU side in engine-core/src/assembler.rs. Do not "fix" them with a guard —
+// that would mask a structure regression instead of tripping the assert.
 
 struct AP { n: u32, inv_h2: f32, k: f32, _pad: f32 };
 
@@ -54,6 +65,7 @@ fn assemble(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     if (pinned[i] != 0u) {
         for (var r = 0u; r < 3u; r = r + 1u) {
+            // Unguarded by design: diag_off is never -1 here (see header).
             values[u32(diag_off[3u * i + r])] = 1.0;
         }
         return;
@@ -88,6 +100,8 @@ fn assemble(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     for (var r = 0u; r < 3u; r = r + 1u) {
+        // Unguarded by design: diag_off is never -1 here (see header). For a free
+        // vertex it points at the start of the 3-run of cols 3i..3i+2 in row 3i+r.
         let base = u32(diag_off[3u * i + r]);
         values[base] = diag[r * 3u];
         values[base + 1u] = diag[r * 3u + 1u];

@@ -1,0 +1,33 @@
+{
+  "sex": "female",
+  "method": "bone heat (parent_set ARMATURE_AUTO) on the solid body, reduced to 4 influences by 4 Laplacian smoothing passes (alpha 0.50) plus a continuous soft threshold",
+  "influences_before_reduction": 6,
+  "smoothing_passes": 4,
+  "smoothing_alpha": 0.5,
+  "stress_max_edge_growth_mm": 3.3879757724049506,
+  "stress_edges_over_5mm": 0,
+  "verts": 791487,
+  "deform_bones": 38,
+  "nondeform_mode": "distal",
+  "nondeform_end_markers": 27,
+  "max_influences": 4,
+  "weight_entries": 1760191,
+  "unweighted_verts": 0,
+  "influences_histogram": {
+    "0": 0,
+    "1": 289996,
+    "2": 257526,
+    "3": 88713,
+    "4": 155252
+  },
+  "weight_sum_max_error": 4.842877388000488e-08,
+  "nearest_bone_distance_mm": {
+    "p50": 77.05519104003906,
+    "p99": 163.6957244873047,
+    "max": 176.55557250976562
+  },
+  "dominant_bone_far_verts": 0,
+  "remote_weight_mass_mean": 0.0,
+  "remote_weight_mass_max": 0.0,
+  "low_weight_long_range_entries": 45113
+}

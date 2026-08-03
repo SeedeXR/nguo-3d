@@ -9,13 +9,14 @@
 //! tree projected from `nguo-doc`, a `⌘K` command palette over the keymap, and
 //! a status bar reading `nguo-registry`.
 
+mod avatar;
 mod command;
 mod shell;
 
 use std::collections::BTreeSet;
 use std::time::Instant;
 
-use iced::widget::{column, container, row, space, stack, text, text_input};
+use iced::widget::{button, column, container, row, space, stack, text, text_input};
 use iced::{Element, Length, Subscription, Task};
 use nguo_canvas::Canvas;
 use nguo_gpu::stats::FrameStats;
@@ -128,6 +129,11 @@ struct App {
     process_label: String,
     fps_label: String,
 
+    /// The body in the viewport and behind the pattern canvas. `None` when
+    /// `assets/avatars/` is absent — the assets are not in every clone, so a
+    /// missing bundle is a toast and a fallback, never a failure to start.
+    avatars: Option<avatar::Avatars>,
+
     camera: Camera,
     canvas_view: nguo_canvas::View,
     canvas_pick: Option<Point>,
@@ -150,13 +156,34 @@ impl App {
         stages.push("theme tokens");
 
         let keymap = nguo_keymap::default_macos();
-        let catalogue = command::catalogue(&keymap);
+        let mut catalogue = command::catalogue(&keymap);
         stages.push("keymap");
 
         let doc = shell::sample_document();
         let scene_rows = shell::scene_tree(&doc);
         let layout = shell::default_layout(&tokens);
         stages.push("document");
+
+        // The bundle is optional. `report_avatar_failure` turns a miss into a
+        // registry failure, which the existing toast layer already renders.
+        let avatars = match avatar::Avatars::load() {
+            Ok(avatars) => {
+                stages.push("avatar");
+                Some(avatars)
+            }
+            Err(error) => {
+                report_avatar_failure(&error);
+                None
+            }
+        };
+        let mut camera = Camera::default();
+        let mut canvas_view = nguo_canvas::View::default();
+        if let Some(avatars) = &avatars {
+            catalogue.extend(avatars.command_entries());
+            catalogue.sort_by(|a, b| a.label.cmp(&b.label));
+            camera.frame_standing(avatars.selected().stature_m as f32);
+            canvas_view.zoom = avatar::fit_zoom(avatars.selected().stature_m);
+        }
 
         Self {
             phase: Phase::Booting(Box::new(Splash::new(Instant::now()))),
@@ -179,8 +206,9 @@ impl App {
             registry: Snapshot::default(),
             dismissed: BTreeSet::new(),
             simulating: false,
-            camera: Camera::default(),
-            canvas_view: nguo_canvas::View::default(),
+            avatars,
+            camera,
+            canvas_view,
             canvas_pick: None,
             viewport_pick: None,
             stats: FrameStats::default(),
@@ -206,6 +234,18 @@ impl App {
             "idle"
         }
     }
+}
+
+/// Surface an avatar failure as a toast, without a bespoke notification list.
+///
+/// The registry already remembers failures with their whole error chain and
+/// `toasts` already renders them (OBSERVABILITY.md), so a typed `AvatarError`
+/// goes in one line and comes out as a dismissable card titled "3D drape
+/// viewport" with the actionable root cause under it. Never fatal: every
+/// caller carries on with `avatars: None`.
+fn report_avatar_failure(error: &nguo_avatar::AvatarError) {
+    tracing::warn!(target: "nguo_app", %error, "avatar unavailable");
+    let _ = nguo_registry::start(nguo_registry::feature_const("viewport.render"), 0).failed(error);
 }
 
 fn focus_name(focus: Context) -> &'static str {
@@ -527,7 +567,24 @@ fn dispatch(app: &mut App, id: CommandId) -> Task<Message> {
         "agent.panel" => app
             .layout
             .update(DockEvent::CollapseToggled(shell::PROPERTIES.into())),
-        "view.zoom_extents_all" => app.canvas_view = nguo_canvas::View::default(),
+        "view.zoom_extents_all" => {
+            app.canvas_view = nguo_canvas::View {
+                // Back to the framing the document opened at, avatar and all
+                // — not to a bare `zoom: 1.0`, which would leave a 1 900 mm
+                // ghost filling the pane.
+                zoom: app
+                    .avatars
+                    .as_ref()
+                    .map_or(1.0, |a| avatar::fit_zoom(a.selected().stature_m)),
+                ..nguo_canvas::View::default()
+            };
+        }
+        other
+            if other.starts_with(avatar::BODY_COMMAND)
+                || other.starts_with(avatar::TONE_COMMAND) =>
+        {
+            select_avatar(app, other);
+        }
         other if other.starts_with("tool.") => app.active_tool = Some(id.clone()),
         other => {
             // Not wired yet, or not ours. Either way: a log line, not a panic.
@@ -535,6 +592,31 @@ fn dispatch(app: &mut App, id: CommandId) -> Task<Message> {
         }
     }
     Task::none()
+}
+
+/// `avatar.body.{male,female}` / `avatar.tone.MST01..MST10`.
+///
+/// Both suffixes come from the bundle itself, so a miss here means a stale
+/// settings file or a bundle that changed under us — a toast, not a panic, same
+/// as any other unknown command.
+fn select_avatar(app: &mut App, command: &str) {
+    let Some(avatars) = app.avatars.as_mut() else {
+        tracing::info!(target: "nguo_app", command, "no avatar bundle; ignoring");
+        return;
+    };
+
+    let result = match command.strip_prefix(avatar::BODY_COMMAND) {
+        Some(key) => avatars.select(key).map(|()| {
+            // Re-frame: the female sculpt is 7.5 cm taller than the male one
+            // (1.90477 m vs 1.830 m — the pipeline never rescales).
+            app.camera
+                .frame_standing(avatars.selected().stature_m as f32);
+        }),
+        None => avatars.set_tone(command.trim_start_matches(avatar::TONE_COMMAND)),
+    };
+    if let Err(error) = result {
+        report_avatar_failure(&error);
+    }
 }
 
 fn close_palette(app: &mut App) {
@@ -617,6 +699,16 @@ fn panel_body<'a>(app: &'a App, _panel: &Panel, tab: &Tab) -> Element<'a, Messag
                     pick: app.canvas_pick,
                 },
                 paper: app.paper.color.canvas,
+                // A ghosted body behind the draft (UX_SPEC §2).
+                // `border_strong` and not `guide`: the canvas entity roles are
+                // the chromatic tokens (UX_SPEC §2) and a violet body would
+                // read as a construction line. This is neutral paper furniture.
+                ghost: app.avatars.as_ref().map(|a| {
+                    (
+                        a.silhouette(),
+                        app.paper.color.border_strong.alpha(GHOST_ALPHA),
+                    )
+                }),
             })
             .width(Length::Fill)
             .height(Length::Fill),
@@ -627,6 +719,7 @@ fn panel_body<'a>(app: &'a App, _panel: &Panel, tab: &Tab) -> Element<'a, Messag
             iced::widget::shader(Viewport {
                 camera: app.camera,
                 time: app.time,
+                avatar: app.avatars.as_ref().map(|a| a.viewport()),
             })
             .width(Length::Fill)
             .height(Length::Fill),
@@ -673,6 +766,8 @@ fn properties(app: &App) -> Element<'_, Message> {
         }
     }
 
+    rows.extend(avatar_picker(app));
+
     rows.push(w::section_header(t, "Document", Some(Icon::Garment)));
     for (label, value) in [
         ("Name", app.doc.meta().name.clone()),
@@ -691,6 +786,168 @@ fn properties(app: &App) -> Element<'_, Message> {
     }
 
     w::inspector(t, rows)
+}
+
+/// Body and skin-tone pickers (UX_SPEC §3.2). Every control emits the same
+/// `CommandId` the palette does — one registry, two surfaces, no second
+/// handler.
+///
+/// Empty when there is no bundle: the toast already says why, and a picker
+/// with nothing to pick is worse than no picker.
+fn avatar_picker(app: &App) -> Vec<Element<'_, Message>> {
+    let t = &app.tokens;
+    let Some(avatars) = app.avatars.as_ref() else {
+        return Vec::new();
+    };
+    let selected = avatars.selected();
+
+    let mut rows = vec![w::section_header(t, "Avatar", Some(Icon::Box3d))];
+
+    for (key, entry) in avatars.entries() {
+        let active = key == avatars.selected_key();
+        rows.push(
+            button(
+                text(short_label(&entry.name))
+                    .size(t.text.small)
+                    .width(Length::Fill),
+            )
+            .width(Length::Fill)
+            .padding([t.space.xs, t.space.sm])
+            .style(move |_theme: &iced::Theme, status| picker_style(t, active, status))
+            .on_press(Message::Command(CommandId::from(format!(
+                "{}{key}",
+                avatar::BODY_COMMAND,
+            ))))
+            .into(),
+        );
+    }
+
+    rows.push(w::property_row(
+        t,
+        "Stature",
+        text(format!("{:.1} cm", selected.stature_m * 100.0))
+            .size(t.text.small)
+            .color(w::color(t.color.text_primary)),
+    ));
+
+    rows.push(w::section_header(t, "Skin tone", Some(Icon::Palette)));
+    let swatches: Vec<Element<'_, Message>> = avatars
+        .tones()
+        .iter()
+        .map(|tone| {
+            let active = tone.key == avatars.tone();
+            // Not a colour literal: this is the Monk scale's own published
+            // sRGB, read out of `data/skin_tones.json`. Its *linear* sibling
+            // and the `baseColorFactor` never come near the UI.
+            let [r, g, b] = tone.swatch.srgb;
+            let fill = nguo_ui_theme::Rgba::new(r, g, b, 1.0);
+            button(space::horizontal())
+                .width(Length::Fixed(SWATCH))
+                .height(Length::Fixed(SWATCH))
+                .padding(0)
+                .style(
+                    move |_theme: &iced::Theme, _status| iced::widget::button::Style {
+                        background: Some(w::color(fill).into()),
+                        border: iced::Border {
+                            color: w::color(if active {
+                                t.color.accent
+                            } else {
+                                t.color.border
+                            }),
+                            width: if active { 2.0 } else { t.metrics.border_width },
+                            radius: t.radius.sm.into(),
+                        },
+                        ..iced::widget::button::Style::default()
+                    },
+                )
+                .on_press(Message::Command(CommandId::from(format!(
+                    "{}{}",
+                    avatar::TONE_COMMAND,
+                    tone.key
+                ))))
+                .into()
+        })
+        .collect();
+
+    rows.push(
+        container(row(swatches).spacing(t.space.xs).wrap())
+            .padding([t.space.xs, 0.0])
+            .into(),
+    );
+    rows.push(w::property_row(
+        t,
+        "Tone",
+        text(avatars.tone_label())
+            .size(t.text.small)
+            .color(w::color(t.color.text_primary)),
+    ));
+
+    // The consolidated CC BY 4.0 notice: it discharges all three obligations at
+    // once — Seede XR for the bodies, texturecan/cgbookcase for the skin maps,
+    // Ellis Monk / Google for the complexion scale — and credits Mixamo
+    // (`assets/avatars/LICENSE.md` §"Minimum notice to ship with the
+    // application"). CC BY 4.0 §3(a)(1) also asks for a link to the licence,
+    // hence the second line.
+    //
+    // ponytail: this is the only user-reachable place there is, because there
+    // is still no about/credits screen. Move it there when one exists; do not
+    // remove it from here until then.
+    rows.push(w::section_header(t, "Credits", Some(Icon::Layers)));
+    // One string, one source of truth: `ATTRIBUTION_NOTICE` carries every credit
+    // AND the licence URL that CC BY 4.0 s3(a)(1)(C) asks for, so nothing is
+    // appended here. It was two lines until the const was completed.
+    rows.push(
+        container(
+            text(nguo_avatar::ATTRIBUTION_NOTICE)
+                .size(t.text.micro)
+                .color(w::color(t.color.text_muted)),
+        )
+        .padding([t.space.xs, t.space.sm])
+        .into(),
+    );
+
+    rows
+}
+
+/// Side of a Monk-tone swatch, logical px. Ten of them plus gaps fit the
+/// 18 %-wide properties panel at the shell's default 1440 px window.
+const SWATCH: f32 = 18.0;
+
+/// `"Nguo Female"` -> `"Female"`. The panel is ~260 px and the studio's name is
+/// already on every row.
+fn short_label(name: &str) -> &str {
+    name.trim_start_matches("Nguo ")
+}
+
+fn picker_style(
+    t: &Tokens,
+    active: bool,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    use iced::widget::button::Status;
+    let bg = match (active, status) {
+        (true, _) => t.color.accent,
+        (false, Status::Hovered | Status::Pressed) => t.color.overlay,
+        (false, _) => nguo_ui_theme::Rgba::new(0.0, 0.0, 0.0, 0.0),
+    };
+    iced::widget::button::Style {
+        background: Some(w::color(bg).into()),
+        text_color: w::color(if active {
+            t.color.on_accent
+        } else {
+            t.color.text_secondary
+        }),
+        border: iced::Border {
+            color: w::color(if active {
+                t.color.accent
+            } else {
+                t.color.border
+            }),
+            width: t.metrics.border_width,
+            radius: t.radius.sm.into(),
+        },
+        ..iced::widget::button::Style::default()
+    }
 }
 
 fn status_bar(app: &App) -> Element<'_, Message> {
@@ -775,7 +1032,12 @@ fn toasts(app: &App) -> Option<Element<'_, Message>> {
             .height(Length::Fill)
             .align_right(Length::Fill)
             .align_bottom(Length::Fill)
-            .padding(t.space.lg)
+            // This layer is the whole window, status bar included, so the
+            // bottom inset has to clear it or the toast sits on top of the
+            // fps read-out. Only visible now that anything actually toasts.
+            .padding(
+                iced::Padding::from(t.space.lg).bottom(t.space.lg + t.metrics.status_bar_height),
+            )
             .into(),
     )
 }
@@ -832,18 +1094,28 @@ fn palette(app: &App) -> Option<Element<'_, Message>> {
     )
 }
 
+/// How much of the `border_strong` token the ghosted body gets. Enough to
+/// place a piece against, faint enough that the draft stays the figure and
+/// this stays the ground.
+const GHOST_ALPHA: f32 = 0.28;
+
 /// A light 2D canvas inside a dark shell (UX_SPEC §2).
 ///
 /// `nguo_canvas::Canvas` hardcodes a dark base colour and belongs to another
 /// crate, so the shell wraps it and overrides exactly one field of the
 /// primitive. Everything else — pan, zoom, hit-testing, the scene — is the
 /// canvas crate's, unchanged.
-struct PatternCanvas {
+///
+/// The avatar ghost is composited the same way: the canvas crate's scene is
+/// appended *on top of* the silhouette, so the draft is never occluded and the
+/// canvas crate needs to know nothing about avatars.
+struct PatternCanvas<'a> {
     inner: Canvas,
     paper: nguo_ui_theme::Rgba,
+    ghost: Option<(&'a vello::kurbo::BezPath, nguo_ui_theme::Rgba)>,
 }
 
-impl iced::widget::shader::Program<nguo_canvas::Action> for PatternCanvas {
+impl iced::widget::shader::Program<nguo_canvas::Action> for PatternCanvas<'_> {
     type State = nguo_canvas::State;
     type Primitive = nguo_gpu::canvas::ScenePrimitive;
 
@@ -864,9 +1136,34 @@ impl iced::widget::shader::Program<nguo_canvas::Action> for PatternCanvas {
         bounds: iced::Rectangle,
     ) -> Self::Primitive {
         let c = self.paper;
+        let base_color = vello::peniko::Color::new([c.r, c.g, c.b, c.a]);
+        let drafted = self.inner.draw(state, cursor, bounds);
+
+        let Some((outline, ink)) = self.ghost else {
+            return nguo_gpu::canvas::ScenePrimitive {
+                base_color,
+                ..drafted
+            };
+        };
+
+        // Logical units and scale factor 1.0 — the primitive applies HiDPI, so
+        // this has to match what `Canvas::draw` did (guide §2.4).
+        let mut scene = vello::Scene::new();
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            self.inner.view.scene_transform(
+                vello::kurbo::Vec2::new(bounds.width as f64, bounds.height as f64),
+                1.0,
+            ),
+            vello::peniko::Color::new([ink.r, ink.g, ink.b, ink.a]),
+            None,
+            outline,
+        );
+        scene.append(&drafted.scene, None);
+
         nguo_gpu::canvas::ScenePrimitive {
-            base_color: vello::peniko::Color::new([c.r, c.g, c.b, c.a]),
-            ..self.inner.draw(state, cursor, bounds)
+            scene: std::sync::Arc::new(scene),
+            base_color,
         }
     }
 
@@ -1018,6 +1315,128 @@ mod tests {
         assert_eq!(failure.title(), "Drape preview");
         assert_eq!(failure.detail(), "could not drape");
         assert_eq!(failure.root_cause(), "solver diverged");
+    }
+
+    /// A clone without `assets/avatars/` must still start, still dispatch and
+    /// still draw — the fallback path, forced regardless of whether the
+    /// bundle happens to be present on this machine.
+    #[test]
+    fn a_missing_bundle_degrades_to_a_toast_and_the_cloth_fallback() {
+        let mut app = App::new();
+        app.avatars = None;
+
+        let camera = app.camera;
+        let _task = dispatch(&mut app, CommandId::from("avatar.body.male"));
+        let _task = dispatch(&mut app, CommandId::from("avatar.body.female"));
+        let _task = dispatch(&mut app, CommandId::from("avatar.tone.MST02"));
+        assert_eq!(app.camera, camera, "a no-op command moved the camera");
+
+        // `view` is what would panic on an unwrap; build the two shader
+        // widgets the way `panel_body` does.
+        assert!(app.avatars.as_ref().map(|a| a.viewport()).is_none());
+        assert!(avatar_picker(&app).is_empty());
+
+        // The failure the loader would have reported still becomes a toast,
+        // not a log line nobody reads.
+        let registry = Registry::new();
+        registry
+            .start(feature_const("viewport.render"), 0)
+            .failed(&nguo_avatar::AvatarError::BundleNotFound("/nope".into()))
+            .unwrap();
+        let failure = registry.snapshot().failures.remove(0);
+        assert_eq!(failure.title(), "3D drape viewport");
+        assert!(
+            failure.root_cause().contains("NGUO_AVATAR_BUNDLE"),
+            "{}",
+            failure.root_cause(),
+        );
+    }
+
+    /// With a bundle present: the picker is on screen, its commands are in the
+    /// palette, and choosing a taller body re-frames the camera onto it.
+    #[test]
+    fn the_pickers_are_wired_to_the_one_command_registry() {
+        let mut app = App::new();
+        if app.avatars.is_none() {
+            {
+                use std::io::Write;
+                // fd 2 directly, NOT `eprintln!`: libtest captures the print
+                // macros, so a macro'd skip notice is invisible without
+                // --nocapture — i.e. not loud at all. Same fix as
+                // engine-api/tests/avatar_bundle.rs.
+                let _ = writeln!(std::io::stderr(), "SKIPPING: no avatar bundle");
+                assert!(
+                    std::env::var_os("MGUSO_REQUIRE_AVATAR_BUNDLE").is_none(),
+                    "MGUSO_REQUIRE_AVATAR_BUNDLE is set but the avatar bundle is absent"
+                );
+            }
+            return;
+        }
+
+        // 2 bodies + 10 tones, all findable by typing (UX_SPEC §3.2).
+        assert_eq!(
+            app.catalogue
+                .iter()
+                .filter(|e| e.id.as_str().starts_with("avatar."))
+                .count(),
+            12,
+        );
+        assert_eq!(command::search(&app.catalogue, "MST07").len(), 1);
+        assert!(command::search(&app.catalogue, "Espresso")
+            .iter()
+            .any(|e| e.id.as_str() == "avatar.tone.MST09"));
+        assert!(command::search(&app.catalogue, "Nguo Male")
+            .iter()
+            .any(|e| e.id.as_str() == "avatar.body.male"));
+
+        // Header + 2 bodies + stature + header + swatches + tone + 2 credits.
+        assert!(avatar_picker(&app).len() >= 9);
+
+        // The shell opens on the female body, which is the *taller* of the two
+        // (1.90477 m vs 1.830 m), so switching to the male one pulls the camera
+        // in rather than pushing it back.
+        let tall = app.camera.distance;
+        let _task = dispatch(&mut app, CommandId::from("avatar.body.male"));
+        let avatars = app.avatars.as_ref().expect("still loaded");
+        assert_eq!(avatars.selected_key(), "male");
+        assert!(
+            app.camera.distance < tall,
+            "the 1.830 m body did not pull the camera in from the 1.90477 m one",
+        );
+        assert!((app.camera.target.y - avatars.selected().stature_m as f32 / 2.0).abs() < 1e-4);
+
+        // Every id the palette lists must dispatch — both bodies and all ten
+        // tones, through the same `dispatch` a keystroke goes through, and
+        // without leaving a failure behind in the registry.
+        let ids: Vec<CommandId> = app
+            .avatars
+            .as_ref()
+            .unwrap()
+            .command_entries()
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(ids.len(), 12);
+        let before = nguo_registry::snapshot().failures.len();
+        for id in ids {
+            let _task = dispatch(&mut app, id.clone());
+            let avatars = app.avatars.as_ref().unwrap();
+            match id.as_str().strip_prefix(avatar::BODY_COMMAND) {
+                Some(key) => assert_eq!(avatars.selected_key(), key),
+                None => assert_eq!(
+                    avatars.tone(),
+                    id.as_str().trim_start_matches(avatar::TONE_COMMAND)
+                ),
+            }
+        }
+        assert_eq!(
+            nguo_registry::snapshot().failures.len(),
+            before,
+            "a catalogue command toasted",
+        );
+
+        let _task = dispatch(&mut app, CommandId::from("avatar.tone.MST02"));
+        assert_eq!(app.avatars.as_ref().unwrap().tone(), "MST02");
     }
 
     #[test]

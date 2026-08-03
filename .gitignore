@@ -26,6 +26,19 @@ __pycache__/
 # See memory/GRAPHIFY.md — the recipe is versioned, the 10 MB output is not.
 graphify-out/
 
+# The avatar delivery archive. Its 227 MB of contents are extracted and
+# committed under assets/avatars/ (LFS, .gitattributes §3b) — keeping the .zip
+# too would double that, and `*.zip` is an LFS pattern, so it would go there
+# silently. Delete it once you have extracted it; this is the safety net.
+# Re-checked 2026-08-03 after the bundle was replaced: no .zip on disk, and the
+# extracted tree measures 232 760 KB / 68 files.
+# Pattern, not a filename: the first delivery was `nguo-avatars-bundle.zip` and
+# the replacement was `nguo-3d-avatars-rust-bundle.zip`, which the old literal
+# did not match — so the safety net was not covering the archive actually on
+# disk. Any avatar delivery archive is caught now.
+*avatar*bundle*.zip
+nguo-3d-avatars*.zip
+
 # Vendored third-party sources (third_party/) are deliberately NOT ignored:
 # the LGPL obligation for planegcs is satisfied by shipping its sources.
 

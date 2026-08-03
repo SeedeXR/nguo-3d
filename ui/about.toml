@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# cargo-about configuration for third-party license attribution.
+#
+# This is the *attribution* half of the licence policy. `deny.toml` at the repo
+# root is the *enforcement* half and is the machine-checked source of truth.
+#
+# The `accepted` list below MUST be byte-for-byte the same set as
+# `deny.toml`'s `[licenses] allow`. `make licenses-sync` checks it — the two
+# lists had silently drifted (this file used to accept bare `GPL-2.0`, which
+# SPDX normalises to `GPL-2.0-only`, the exact id deny.toml forbids because it
+# blocks the GPLv3 upgrade path; and it omitted `LGPL-2.1-or-later`, the
+# licence `third_party/planegcs` is vendored under).
+#
+# THE RULE: every dependency must permit commercial use. Copyleft passes that
+# test — GPL/LGPL/MPL constrain distribution terms, not commerce. The
+# non-commercial family (CC BY-NC*, SSPL, BUSL, Elastic, research-only) fails
+# it. See ../LICENSING.md (repo root).
+#
+# `BSL-1.0` is the Boost Software License (permissive), NOT Business Source.
+
+# Same five triples as deny.toml's [graph] targets. This is not cosmetic: it
+# makes the generated attribution byte-identical on macOS and on the Linux CI
+# runner, which is what lets `make attribution-check` diff it.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+
+accepted = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0-or-later",
+    "GPL-2.0-or-later",
+    "GPL-3.0-or-later",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "Unlicense",
+    "BSL-1.0",
+    "OFL-1.1",
+    # CC-BY-4.0 (added 2026-08-03): shipped by the avatar bundle, not by any
+    # crate. The skin textures and the Monk Skin Tone Scale in
+    # `assets/avatars/` are CC BY 4.0, so it is a licence this project
+    # distributes and all three lists must say so. Zero crates in either graph
+    # use it, so the Cargo-side widening is nominal. Attribution is its only
+    # condition; `assets/avatars/LICENSE.md` records it as owed.
+    "CC-BY-4.0",
+]
+
+# No per-crate exceptions. There was one (see LICENSING.md §3): egui's bundled
+# fonts pulled a licence that is not cleanly GPL-compatible. `egui` is now
+# declared `default-features = false`, the crate left the graph, and the
+# exception went with it. `deny.toml` has no [[licenses.exceptions]] either;
+# `make licenses-sync` keeps the two in step.
+
+# Crates marked `publish = false` are ours, not third parties — skip them.
+# NOTE (observed 2026-08-02): no crate in either workspace sets `publish`, so
+# this currently matches nothing and the `engine-*` / `nguo-*` crates DO appear
+# in the generated file, under the project's own GPL-2.0-or-later. Harmless but
+# untidy; add `publish = false` to the workspace crates to drop them.
+[private]
+ignore = true
+
+# This file and `ui/about.toml` are byte-identical, and `make licenses-sync`
+# fails if they stop being (as well as diffing `accepted` against deny.toml's
+# `allow`). Edit both, or neither. TOML has no include; the check is the fix.

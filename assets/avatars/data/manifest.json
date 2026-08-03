@@ -1,0 +1,548 @@
+{
+  "asset": "Nguo 3D Avatars",
+  "version": "1.0.0",
+  "studio": "Seede XR",
+  "purpose": "Rigged human avatars for the Seede XR Rust cloth design and simulation application",
+  "generated_with": "Blender 5.2.0",
+  "conventions": {
+    "units": "metres",
+    "blender": {
+      "up": "+Z",
+      "forward": "-Y",
+      "character_right": "-X"
+    },
+    "gltf_vrm": {
+      "up": "+Y",
+      "forward": "+Z",
+      "handedness": "right"
+    },
+    "unity_fbx": {
+      "up": "+Y",
+      "forward": "+Z",
+      "scale": 1.0
+    },
+    "fps": 30,
+    "uv0": "UVMap - tiling skin detail, one tile = 0.20 m of skin",
+    "uv1": "UVMap_Atlas - the same unwrap packed into 0..1, for baking"
+  },
+  "formats": {
+    "primary": "glTF 2.0 binary (.glb)",
+    "humanoid_variant": "VRM 1.0 (.vrm) - adds VRMC_vrm humanoid bone mapping",
+    "editable": "Blender (.blend) - all four tiers, materials and actions",
+    "engine": "FBX (.fbx) - Unity Humanoid ready"
+  },
+  "default_tier": "LOD2",
+  "skin": {
+    "standard": "Monk Skin Tone Scale (10 shades), Ellis Monk / Google",
+    "standard_licence": "CC BY 4.0",
+    "tone_count": 10,
+    "how_to_use": {
+      "recommended": "Use shared/skin_albedo_neutral.png and set glTF pbrMetallicRoughness.baseColorFactor (or Unity _Color) to the tone's base_color_factor. No texture reload.",
+      "drop_in": "Use the tone's baked_albedo and leave baseColorFactor white."
+    },
+    "detail": "data/skin_tones.json"
+  },
+  "avatars": {
+    "male": {
+      "name": "Nguo Male",
+      "stature_m": 1.83,
+      "arm_span_m": 1.90928,
+      "volume_m3": 0.09840593,
+      "surface_area_m2": 2.28633246,
+      "measurements": {
+        "neck": {
+          "circumference_m": 0.53095,
+          "height_m": 1.5921,
+          "height_fraction": 0.87
+        },
+        "upper_chest": {
+          "circumference_m": 1.19968,
+          "height_m": 1.4274,
+          "height_fraction": 0.78
+        },
+        "chest": {
+          "circumference_m": 1.20131,
+          "height_m": 1.41409,
+          "height_fraction": 0.77273
+        },
+        "underbust": {
+          "circumference_m": 0.9111,
+          "height_m": 1.19865,
+          "height_fraction": 0.655
+        },
+        "waist": {
+          "circumference_m": 0.85004,
+          "height_m": 1.13349,
+          "height_fraction": 0.61939
+        },
+        "high_hip": {
+          "circumference_m": 0.97247,
+          "height_m": 0.99735,
+          "height_fraction": 0.545
+        },
+        "hip": {
+          "circumference_m": 1.05369,
+          "height_m": 0.89115,
+          "height_fraction": 0.48697
+        },
+        "thigh": {
+          "circumference_m": 0.68568,
+          "height_m": 0.8601
+        },
+        "calf": {
+          "circumference_m": 0.43083,
+          "height_m": 0.549
+        }
+      },
+      "skeleton": {
+        "bones": 65,
+        "naming": "Mixamo (mixamorig: prefix)",
+        "hip_height_m": 1.04867,
+        "inseam_m": 0.8601,
+        "femur_m": 0.423558,
+        "tibia_m": 0.427297,
+        "upper_arm_m": 0.278431,
+        "forearm_m": 0.278011,
+        "deforming_bones": 38,
+        "max_influences_per_vertex": 4
+      },
+      "tiers": [
+        {
+          "tier": "LOD0",
+          "object": "Nguo_Male_Body_LOD0",
+          "verts": 843443,
+          "tris": 1686890,
+          "role": "archival master / hero renders"
+        },
+        {
+          "tier": "LOD1",
+          "object": "Nguo_Male_Body_LOD1",
+          "verts": 99998,
+          "tris": 200000,
+          "role": "high-quality real-time"
+        },
+        {
+          "tier": "LOD2",
+          "object": "Nguo_Male_Body_LOD2",
+          "verts": 24998,
+          "tris": 50000,
+          "role": "default runtime avatar"
+        },
+        {
+          "tier": "COL",
+          "object": "Nguo_Male_Body_COL",
+          "verts": 7498,
+          "tris": 15000,
+          "role": "cloth collision body"
+        }
+      ],
+      "files": {
+        "blend": "blend/nguo_male.blend",
+        "glb": {
+          "runtime": "avatars/glb/nguo_male.glb",
+          "lod1": "avatars/glb/nguo_male_lod1.glb",
+          "lod0": "avatars/glb/nguo_male_lod0.glb",
+          "collision": "avatars/glb/nguo_male_collision.glb"
+        },
+        "vrm": "avatars/vrm/nguo_male.vrm",
+        "unity_fbx": {
+          "runtime": "avatars/unity/nguo_male.fbx",
+          "lod1": "avatars/unity/nguo_male_lod1.fbx",
+          "collision": "avatars/unity/nguo_male_collision.fbx"
+        }
+      },
+      "animations": [
+        {
+          "action": "f_Catwalk_Sequence_02",
+          "source_clip": "Catwalk Sequence 02",
+          "frames": 366,
+          "duration_s": 12.2
+        },
+        {
+          "action": "f_Catwalk_Sequence_05",
+          "source_clip": "Catwalk Sequence 05",
+          "frames": 306,
+          "duration_s": 10.2
+        },
+        {
+          "action": "f_Catwalk_Walk_Forward",
+          "source_clip": "Catwalk Walk Forward",
+          "frames": 37,
+          "duration_s": 1.2333
+        },
+        {
+          "action": "f_Catwalk_Walk_Stop_Twist_L",
+          "source_clip": "Catwalk Walk Stop Twist L",
+          "frames": 76,
+          "duration_s": 2.5333
+        },
+        {
+          "action": "f_Catwalk_Walk_Stop",
+          "source_clip": "Catwalk Walk Stop",
+          "frames": 59,
+          "duration_s": 1.9667
+        },
+        {
+          "action": "f_Catwalk_Walk",
+          "source_clip": "Catwalk Walk",
+          "frames": 455,
+          "duration_s": 15.1667
+        },
+        {
+          "action": "f_Catwalk_Walking",
+          "source_clip": "Catwalk Walking",
+          "frames": 36,
+          "duration_s": 1.2
+        },
+        {
+          "action": "f_Female_Start_Walking",
+          "source_clip": "Female Start Walking",
+          "frames": 57,
+          "duration_s": 1.9
+        },
+        {
+          "action": "f_Female_Stop_Walking",
+          "source_clip": "Female Stop Walking",
+          "frames": 47,
+          "duration_s": 1.5667
+        },
+        {
+          "action": "f_Female_Walk",
+          "source_clip": "Female Walk",
+          "frames": 36,
+          "duration_s": 1.2
+        },
+        {
+          "action": "m_Catwalk_Idle_To_Walk_Forward",
+          "source_clip": "Catwalk Idle To Walk Forward",
+          "frames": 41,
+          "duration_s": 1.3667
+        },
+        {
+          "action": "m_Catwalk_Idle_Twist_L",
+          "source_clip": "Catwalk Idle Twist L",
+          "frames": 86,
+          "duration_s": 2.8667
+        },
+        {
+          "action": "m_Catwalk_Twist_L_To_Twist_R",
+          "source_clip": "Catwalk Twist L To Twist R",
+          "frames": 61,
+          "duration_s": 2.0333
+        },
+        {
+          "action": "m_Catwalk_Walk_Forward_02",
+          "source_clip": "Catwalk Walk Forward 02",
+          "frames": 35,
+          "duration_s": 1.1667
+        },
+        {
+          "action": "m_Catwalk_Walk_Forward_03",
+          "source_clip": "Catwalk Walk Forward 03",
+          "frames": 34,
+          "duration_s": 1.1333
+        },
+        {
+          "action": "m_Catwalk_Walk_Forward_Arc_90R",
+          "source_clip": "Catwalk Walk Forward Arc 90R",
+          "frames": 73,
+          "duration_s": 2.4333
+        },
+        {
+          "action": "m_Catwalk_Walk_Forward_Turn_90R",
+          "source_clip": "Catwalk Walk Forward Turn 90R",
+          "frames": 75,
+          "duration_s": 2.5
+        },
+        {
+          "action": "m_Catwalk_Walk_Stop_Twist_L",
+          "source_clip": "Catwalk Walk Stop Twist L",
+          "frames": 51,
+          "duration_s": 1.7
+        },
+        {
+          "action": "m_Catwalk_Walk_Stop",
+          "source_clip": "Catwalk Walk Stop",
+          "frames": 51,
+          "duration_s": 1.7
+        }
+      ],
+      "previews": [
+        "previews/male_hero.png",
+        "previews/male_orthos.png",
+        "previews/male_tones.png",
+        "previews/male_lods.png",
+        "previews/male_walk.png"
+      ],
+      "verification": {
+        "lod0_vs_source_worst_vertex_m": 5.066394805908203e-07,
+        "silhouette_mismatch_fraction": {
+          "LOD0": 5e-06,
+          "LOD1": 0.000224,
+          "LOD2": 0.000762,
+          "COL": 0.002315
+        },
+        "animation_edge_growth_over_median_edge": {
+          "Nguo_Male_Body_COL": 2.2958,
+          "Nguo_Male_Body_LOD0": 3.3618,
+          "Nguo_Male_Body_LOD1": 3.1889,
+          "Nguo_Male_Body_LOD2": 2.8405
+        },
+        "collision_proxy_posed_deviation_mm": 5.3488
+      }
+    },
+    "female": {
+      "name": "Nguo Female",
+      "stature_m": 1.90477,
+      "arm_span_m": 1.857649,
+      "volume_m3": 0.08439495,
+      "surface_area_m2": 2.13468997,
+      "measurements": {
+        "neck": {
+          "circumference_m": 0.36636,
+          "height_m": 1.64445,
+          "height_fraction": 0.86333
+        },
+        "upper_chest": {
+          "circumference_m": 1.11468,
+          "height_m": 1.48774,
+          "height_fraction": 0.78106
+        },
+        "chest": {
+          "circumference_m": 1.11603,
+          "height_m": 1.47187,
+          "height_fraction": 0.77273
+        },
+        "underbust": {
+          "circumference_m": 0.7849,
+          "height_m": 1.24762,
+          "height_fraction": 0.655
+        },
+        "waist": {
+          "circumference_m": 0.745,
+          "height_m": 1.20866,
+          "height_fraction": 0.63455
+        },
+        "high_hip": {
+          "circumference_m": 1.00569,
+          "height_m": 1.0381,
+          "height_fraction": 0.545
+        },
+        "hip": {
+          "circumference_m": 1.08727,
+          "height_m": 0.93218,
+          "height_fraction": 0.48939
+        },
+        "thigh": {
+          "circumference_m": 0.64741,
+          "height_m": 0.89524
+        },
+        "calf": {
+          "circumference_m": 0.39031,
+          "height_m": 0.57143
+        }
+      },
+      "skeleton": {
+        "bones": 65,
+        "naming": "Mixamo (mixamorig: prefix)",
+        "hip_height_m": 1.091515,
+        "inseam_m": 0.925717,
+        "femur_m": 0.438774,
+        "tibia_m": 0.441086,
+        "upper_arm_m": 0.270209,
+        "forearm_m": 0.268361,
+        "deforming_bones": 38,
+        "max_influences_per_vertex": 4
+      },
+      "tiers": [
+        {
+          "tier": "LOD0",
+          "object": "Nguo_Female_Body_LOD0",
+          "verts": 791487,
+          "tris": 1582974,
+          "role": "archival master / hero renders"
+        },
+        {
+          "tier": "LOD1",
+          "object": "Nguo_Female_Body_LOD1",
+          "verts": 99999,
+          "tris": 199998,
+          "role": "high-quality real-time"
+        },
+        {
+          "tier": "LOD2",
+          "object": "Nguo_Female_Body_LOD2",
+          "verts": 24999,
+          "tris": 49998,
+          "role": "default runtime avatar"
+        },
+        {
+          "tier": "COL",
+          "object": "Nguo_Female_Body_COL",
+          "verts": 7500,
+          "tris": 15000,
+          "role": "cloth collision body"
+        }
+      ],
+      "files": {
+        "blend": "blend/nguo_female.blend",
+        "glb": {
+          "runtime": "avatars/glb/nguo_female.glb",
+          "lod1": "avatars/glb/nguo_female_lod1.glb",
+          "lod0": "avatars/glb/nguo_female_lod0.glb",
+          "collision": "avatars/glb/nguo_female_collision.glb"
+        },
+        "vrm": "avatars/vrm/nguo_female.vrm",
+        "unity_fbx": {
+          "runtime": "avatars/unity/nguo_female.fbx",
+          "lod1": "avatars/unity/nguo_female_lod1.fbx",
+          "collision": "avatars/unity/nguo_female_collision.fbx"
+        }
+      },
+      "animations": [
+        {
+          "action": "f_Catwalk_Sequence_02",
+          "source_clip": "Catwalk Sequence 02",
+          "frames": 366,
+          "duration_s": 12.2
+        },
+        {
+          "action": "f_Catwalk_Sequence_05",
+          "source_clip": "Catwalk Sequence 05",
+          "frames": 306,
+          "duration_s": 10.2
+        },
+        {
+          "action": "f_Catwalk_Walk_Forward",
+          "source_clip": "Catwalk Walk Forward",
+          "frames": 37,
+          "duration_s": 1.2333
+        },
+        {
+          "action": "f_Catwalk_Walk_Stop_Twist_L",
+          "source_clip": "Catwalk Walk Stop Twist L",
+          "frames": 76,
+          "duration_s": 2.5333
+        },
+        {
+          "action": "f_Catwalk_Walk_Stop",
+          "source_clip": "Catwalk Walk Stop",
+          "frames": 59,
+          "duration_s": 1.9667
+        },
+        {
+          "action": "f_Catwalk_Walk",
+          "source_clip": "Catwalk Walk",
+          "frames": 455,
+          "duration_s": 15.1667
+        },
+        {
+          "action": "f_Catwalk_Walking",
+          "source_clip": "Catwalk Walking",
+          "frames": 36,
+          "duration_s": 1.2
+        },
+        {
+          "action": "f_Female_Start_Walking",
+          "source_clip": "Female Start Walking",
+          "frames": 57,
+          "duration_s": 1.9
+        },
+        {
+          "action": "f_Female_Stop_Walking",
+          "source_clip": "Female Stop Walking",
+          "frames": 47,
+          "duration_s": 1.5667
+        },
+        {
+          "action": "f_Female_Walk",
+          "source_clip": "Female Walk",
+          "frames": 36,
+          "duration_s": 1.2
+        },
+        {
+          "action": "m_Catwalk_Idle_To_Walk_Forward",
+          "source_clip": "Catwalk Idle To Walk Forward",
+          "frames": 41,
+          "duration_s": 1.3667
+        },
+        {
+          "action": "m_Catwalk_Idle_Twist_L",
+          "source_clip": "Catwalk Idle Twist L",
+          "frames": 86,
+          "duration_s": 2.8667
+        },
+        {
+          "action": "m_Catwalk_Twist_L_To_Twist_R",
+          "source_clip": "Catwalk Twist L To Twist R",
+          "frames": 61,
+          "duration_s": 2.0333
+        },
+        {
+          "action": "m_Catwalk_Walk_Forward_02",
+          "source_clip": "Catwalk Walk Forward 02",
+          "frames": 35,
+          "duration_s": 1.1667
+        },
+        {
+          "action": "m_Catwalk_Walk_Forward_03",
+          "source_clip": "Catwalk Walk Forward 03",
+          "frames": 34,
+          "duration_s": 1.1333
+        },
+        {
+          "action": "m_Catwalk_Walk_Forward_Arc_90R",
+          "source_clip": "Catwalk Walk Forward Arc 90R",
+          "frames": 73,
+          "duration_s": 2.4333
+        },
+        {
+          "action": "m_Catwalk_Walk_Forward_Turn_90R",
+          "source_clip": "Catwalk Walk Forward Turn 90R",
+          "frames": 75,
+          "duration_s": 2.5
+        },
+        {
+          "action": "m_Catwalk_Walk_Stop_Twist_L",
+          "source_clip": "Catwalk Walk Stop Twist L",
+          "frames": 51,
+          "duration_s": 1.7
+        },
+        {
+          "action": "m_Catwalk_Walk_Stop",
+          "source_clip": "Catwalk Walk Stop",
+          "frames": 51,
+          "duration_s": 1.7
+        }
+      ],
+      "previews": [
+        "previews/female_hero.png",
+        "previews/female_orthos.png",
+        "previews/female_tones.png",
+        "previews/female_lods.png",
+        "previews/female_walk.png"
+      ],
+      "verification": {
+        "lod0_vs_source_worst_vertex_m": 5.693725597666344e-07,
+        "silhouette_mismatch_fraction": {
+          "LOD0": 1.1e-05,
+          "LOD1": 0.000166,
+          "LOD2": 0.000643,
+          "COL": 0.002095
+        },
+        "animation_edge_growth_over_median_edge": {
+          "Nguo_Female_Body_COL": 1.6047,
+          "Nguo_Female_Body_LOD0": 2.2859,
+          "Nguo_Female_Body_LOD1": 2.8949,
+          "Nguo_Female_Body_LOD2": 1.9957
+        },
+        "collision_proxy_posed_deviation_mm": 2.0117
+      }
+    }
+  },
+  "docs": {
+    "integration": "docs/INTEGRATION.md",
+    "attribution": "docs/ATTRIBUTION.md",
+    "pipeline_notes": "docs/PIPELINE_NOTES.md"
+  }
+}

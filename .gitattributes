@@ -43,6 +43,7 @@
 *.woff    binary
 *.woff2   binary
 *.glb     binary
+*.vrm     binary
 *.npy     binary
 *.pdf     binary
 
@@ -56,7 +57,8 @@
 # or a UI-reference capture *is* committed, it lands in LFS instead of being
 # baked into history where it cannot be removed.
 #
-# Deliberately NOT listed: *.png, *.ttf, *.svg, *.glb, *.obj. See §4.
+# Deliberately NOT listed as bare extensions: *.png, *.ttf, *.svg, *.glb,
+# *.obj. See §3b (path-scoped instead) and §4 (never).
 *.blend   filter=lfs diff=lfs merge=lfs -text
 *.blend1  filter=lfs diff=lfs merge=lfs -text
 *.fbx     filter=lfs diff=lfs merge=lfs -text
@@ -69,6 +71,64 @@
 *.mp4     filter=lfs diff=lfs merge=lfs -text
 *.mov     filter=lfs diff=lfs merge=lfs -text
 *.wav     filter=lfs diff=lfs merge=lfs -text
+
+# ---------------------------------------------------------------------------
+# 3b. Git LFS — the avatar bundle (re-measured 2026-08-03, SECOND bundle)
+# ---------------------------------------------------------------------------
+# The bundle was REPLACED. The first one was 223 MB / 94 files, flat, four
+# avatars, bodies of unverified provenance. This one is 227 MB / 68 files, two
+# avatars, nested, and Seede XR owns the bodies outright (LICENSING.md §4).
+# The block below was re-derived against the new tree, not carried over.
+#
+# Measured with `du -k` on 2026-08-03 — 68 files, 232 760 KB (227.3 MiB),
+# against 716 tracked files for the entire rest of the repo:
+#
+#   avatars/glb/            127 568 KB   124.6 MiB    6 x .glb
+#   avatars/vrm/             50 268 KB    49.1 MiB    2 x .vrm
+#   textures/skin/shared/    30 368 KB    29.7 MiB    7 x .png  (normal/AO/rough/...)
+#   textures/skin/tones/     19 060 KB    18.6 MiB   10 x .png  (MST01..MST10 albedo)
+#   previews/                 5 276 KB     5.2 MiB   11 x .png
+#   data/                       172 KB               28 x .json
+#   README.md + docs/            48 KB                4 x .md
+#
+# So 232 540 KB (99.91 %) is .glb/.vrm/.png and 220 KB (0.09 %) is text. LFS
+# takes the first group and nothing else. The 28 JSON (manifest, rig, bone map,
+# UVs, LOD/animation/export metadata, MST tone values) and the 4 Markdown stay
+# in NORMAL GIT — 220 KB total, they diff, and they are by far the most
+# reviewable part of the bundle. Routing them to LFS would make the licensing
+# and rig metadata unreadable in a PR to buy back 0.09 % of the bytes.
+#
+# Two repo-side files were added next to the bundle and are also normal git:
+# `assets/avatars/LICENSE.md` (the licence record) and
+# `assets/avatars/LICENSES/CC-BY-4.0.txt` (18 657 bytes, the canonical CC BY 4.0
+# legal text — the assets are CC BY 4.0, see LICENSING.md §0). A licence text
+# that only exists as an LFS pointer would not satisfy anything, so no rule here
+# may ever route *.txt or *.md under assets/avatars/ to LFS.
+#
+# The three globs below are unchanged from the first bundle, and that is a
+# verified result rather than an assumption: `git check-attr filter` over all
+# 68 files gives filter=lfs for exactly 36 (6 glb + 2 vrm + 28 png) and
+# unspecified for exactly 32 (28 json + 4 md). `**` matches zero or more
+# directories, so the new nested `avatars/glb/`, `avatars/vrm/` and
+# `textures/skin/{shared,tones}/` are covered without a per-directory rule.
+#
+# Rules are PATH-SCOPED, not bare-extension, on purpose: a bare `*.png` would
+# also swallow ui/assets/images/splash_screen_image.png and the icon SVGs'
+# neighbours, which §4 forbids. Scoping means §4 does not have to fight §3b.
+#
+# Safe to LFS because these are RUNTIME-loaded, never embedded at compile time.
+# Re-verified 2026-08-03 — `grep -rn 'include_bytes!\|include_str!'
+# --include=*.rs` over core-engine/ ui/ bridges/ tools/ gives 5 real
+# `include_bytes!` sites, ALL under ui/assets/ (splash PNG, brand SVG, Inter
+# TTF, Space Mono TTF, the icons macro), and every `include_str!` is a *.wgsl
+# shader. ZERO hits reference assets/avatars/. The bundle is opened at run time
+# by nguo_avatar (ui/crates/nguo-avatar/src/lib.rs:266-272, path from
+# $NGUO_AVATAR_BUNDLE or <repo>/assets/avatars), which returns an error for a
+# bad file — an LFS pointer fails loudly there instead of silently becoming the
+# mesh. See §4 for why that distinction is load-bearing.
+assets/avatars/**/*.glb filter=lfs diff=lfs merge=lfs -text
+assets/avatars/**/*.vrm filter=lfs diff=lfs merge=lfs -text
+assets/avatars/**/*.png filter=lfs diff=lfs merge=lfs -text
 
 # ---------------------------------------------------------------------------
 # 4. Build-time embedded assets — MUST NEVER GO TO LFS
@@ -85,11 +145,13 @@
 #
 # Sites (verified 2026-08-02):
 #   ui/crates/nguo-splash/src/lib.rs:58,59,79   splash PNG, brand SVG, Inter TTF
+#   ui/crates/nguo-gpu/src/overlay.rs:23         Space Mono TTF (the egui overlay's only font)
 #   ui/crates/nguo-ui-widgets/src/icon.rs:103   include_bytes!(concat!("../../../assets/icons/", $file, ".svg"))
 #   ui/crates/nguo-viewport3d/src/renderer.rs, ui/crates/nguo-gpu/src/blit.rs,
 #   core-engine/crates/engine-gpu/src/*.rs      include_str! on *.wgsl (text, never LFS)
 ui/assets/images/splash_screen_image.png -filter -diff -merge binary
 ui/assets/fonts/Inter-Regular.ttf        -filter -diff -merge binary
+ui/assets/fonts/SpaceMono-Regular.ttf    -filter -diff -merge binary
 ui/assets/icons/**                       -filter -diff -merge text eol=lf
 ui/assets/brand-icon/**                  -filter -diff -merge text eol=lf
 
