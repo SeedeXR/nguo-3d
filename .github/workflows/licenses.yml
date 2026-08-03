@@ -35,7 +35,7 @@ jobs:
 
       # Prebuilt binaries — no compile, a few seconds. Same tool version story
       # as `brew install cargo-deny cargo-about` locally.
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.5
         with:
           # cargo-about is version-pinned on purpose: attribution-check diffs
           # its output byte-for-byte, so a tool upgrade that reflows the
