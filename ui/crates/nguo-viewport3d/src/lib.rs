@@ -64,7 +64,12 @@ impl AvatarMesh {
     }
 }
 
-/// The avatar the viewport should draw this frame.
+/// One lit mesh the viewport should draw this frame.
+///
+/// Used for the body *and* for the garment: a lit indexed triangle mesh with a
+/// base colour is the same thing either way, so they share the struct and the
+/// pipeline rather than growing a second copy of both. The name is the body's
+/// because that is what landed first.
 #[derive(Debug, Clone)]
 pub struct Avatar {
     pub mesh: Arc<AvatarMesh>,
@@ -110,6 +115,10 @@ pub struct Viewport {
     /// to the bring-up cloth sheet, so a clone without `assets/avatars/` still
     /// has a populated viewport.
     pub avatar: Option<Avatar>,
+    /// The garment, drawn over the body in the same frame. `None` until one has
+    /// been sewn. A garment with no body still draws — that is the honest
+    /// picture of a drape under gravity with nothing to drape over.
+    pub garment: Option<Avatar>,
 }
 
 /// Radians of orbit per logical point of drag.
@@ -185,6 +194,7 @@ impl shader::Program<Action> for Viewport {
             camera: self.camera,
             time: self.time,
             avatar: self.avatar.clone(),
+            garment: self.garment.clone(),
         }
     }
 
@@ -210,12 +220,18 @@ pub struct ClothPrimitive {
     camera: Camera,
     time: f32,
     avatar: Option<Avatar>,
+    garment: Option<Avatar>,
 }
 
 #[derive(Debug)]
 pub struct ClothPipeline {
     renderer: ClothRenderer,
     avatar: AvatarRenderer,
+    /// A second instance of the same pass, with its own geometry and its own
+    /// uniform buffer. Two `AvatarRenderer`s rather than one renderer with two
+    /// geometry slots: the pipeline, layout and shader are shared through
+    /// `Arc`s inside wgpu, so the duplication is one uniform buffer.
+    garment: AvatarRenderer,
     // ponytail: a single viewport instance, so the current frame's rectangle
     // can live on the shared pipeline. Key it per widget when we add a second
     // 3D view (split-screen / detached window, guide §2.6).
@@ -229,6 +245,7 @@ impl shader::Pipeline for ClothPipeline {
         Self {
             renderer: ClothRenderer::new(device, format),
             avatar: AvatarRenderer::new(device, format),
+            garment: AvatarRenderer::new(device, format),
             rect: PhysicalRect::default(),
         }
     }
@@ -264,24 +281,32 @@ impl Primitive for ClothPrimitive {
         };
         let view_projection = self.camera.view_projection(aspect);
 
-        // The depth attachment has to match the colour attachment, which is
-        // the whole frame. Only the pass that will actually run allocates one.
+        // The depth attachment has to match the colour attachment, which is the
+        // whole frame. `pipeline.avatar` allocates the frame's ONE depth texture
+        // whenever any mesh is drawn, and the garment pass shares it — that
+        // sharing is what makes the body occlude the garment behind it.
         let frame = viewport.physical_size();
-        match &self.avatar {
-            Some(avatar) => {
-                pipeline
-                    .avatar
-                    .ensure_depth(device, frame.width, frame.height);
-                pipeline
-                    .avatar
-                    .upload(device, queue, avatar, view_projection);
-            }
-            None => {
-                pipeline
-                    .renderer
-                    .ensure_depth(device, frame.width, frame.height);
-                pipeline.renderer.upload(queue, view_projection, self.time);
-            }
+        let meshes = self.avatar.is_some() || self.garment.is_some();
+        if meshes {
+            pipeline
+                .avatar
+                .ensure_depth(device, frame.width, frame.height);
+        }
+        if let Some(avatar) = &self.avatar {
+            pipeline
+                .avatar
+                .upload(device, queue, avatar, view_projection);
+        }
+        if let Some(garment) = &self.garment {
+            pipeline
+                .garment
+                .upload(device, queue, garment, view_projection);
+        }
+        if !meshes {
+            pipeline
+                .renderer
+                .ensure_depth(device, frame.width, frame.height);
+            pipeline.renderer.upload(queue, view_projection, self.time);
         }
     }
 
@@ -299,13 +324,28 @@ impl Primitive for ClothPrimitive {
             height: clip_bounds.height,
         };
 
-        // The body replaces the bring-up sheet rather than sharing the frame
-        // with it: the sheet is a horizontal plane at y≈0, which would slice
-        // through the avatar's shins.
-        if self.avatar.is_some() {
-            pipeline.avatar.draw(encoder, target, pipeline.rect, clip);
-        } else {
-            pipeline.renderer.draw(encoder, target, pipeline.rect, clip);
+        // Real geometry replaces the bring-up sheet rather than sharing the
+        // frame with it: the sheet is a horizontal plane at y≈0, which would
+        // slice through the avatar's shins.
+        //
+        // Body first so it clears the shared depth buffer, garment second so it
+        // is depth-tested against the body.
+        let Some(depth) = pipeline.avatar.depth_view() else {
+            if self.avatar.is_none() && self.garment.is_none() {
+                pipeline.renderer.draw(encoder, target, pipeline.rect, clip);
+            }
+            return;
+        };
+        let mut first = true;
+        for (present, renderer) in [
+            (self.avatar.is_some(), &pipeline.avatar),
+            (self.garment.is_some(), &pipeline.garment),
+        ] {
+            if !present {
+                continue;
+            }
+            renderer.draw(encoder, target, pipeline.rect, clip, depth, first);
+            first = false;
         }
     }
 }
@@ -387,6 +427,7 @@ mod routing_tests {
             camera: Camera::default(),
             time: 0.0,
             avatar: None,
+            garment: None,
         };
         let mut state = State::default();
 
@@ -429,6 +470,7 @@ mod routing_tests {
             camera: Camera::default(),
             time: 0.0,
             avatar: None,
+            garment: None,
         };
         let mut state = State::default();
 

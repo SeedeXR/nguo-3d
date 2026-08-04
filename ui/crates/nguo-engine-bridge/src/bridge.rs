@@ -219,6 +219,7 @@ mod tests {
     fn submission(tier: Tier) -> Submission {
         Submission {
             scene: serde_json::json!({}),
+            stitches: Vec::new(),
             tier,
             frames: None,
             out_dir: None,

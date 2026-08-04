@@ -109,6 +109,21 @@ pub enum Feature {
         angle_rad: f64,
         text: String,
     },
+    /// The edge this piece **hangs from**, and the body landmark it hangs at: a
+    /// waistband at the waist, a bodice at the underbust. `landmark` is the
+    /// avatar manifest's own key (`"waist"`, `"hip"`, `"underbust"`, …) as a
+    /// plain string, so `nguo-doc` needs no dependency on `nguo-avatar` —
+    /// `nguo_avatar::Landmark::from_key` resolves it.
+    ///
+    /// This is **placement only**. It says where the garment goes, never how big
+    /// it is: nothing downstream may scale a piece to make a girth match, because
+    /// re-sizing a drafted pattern to a body is *grading* and grading re-evaluates
+    /// the parameter table (guide §19), it is not a transform.
+    ///
+    /// No schema bump: an additive enum variant, and a document without one is
+    /// still a valid schema-2 document (the garment then falls back to the
+    /// arranger's default height).
+    Support { edge: EdgeId, landmark: String },
 }
 
 /// One side of a seam: an ordered chain of edges within one piece, and the

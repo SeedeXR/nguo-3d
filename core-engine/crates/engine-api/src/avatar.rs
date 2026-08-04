@@ -88,6 +88,7 @@
 
 use crate::auto_drape::{drape_material, drape_scene, PLACEMENT_GAP};
 use crate::{Aabb, FabricPreset, Object, Scene};
+use glam::Vec3;
 
 /// Why a mesh cannot be used as an avatar collider or a garment.
 ///
@@ -125,7 +126,7 @@ pub enum AvatarError {
 }
 
 /// Validate a disk-loaded mesh and return its bounding box.
-fn checked_bounds(role: &'static str, mesh: &Object) -> Result<Aabb, AvatarError> {
+pub(crate) fn checked_bounds(role: &'static str, mesh: &Object) -> Result<Aabb, AvatarError> {
     let name = || mesh.name.clone();
     let Some(bb) = Aabb::of(&mesh.positions) else {
         return Err(AvatarError::Empty { role, name: name() });
@@ -282,6 +283,22 @@ pub enum GarmentPlacement {
     /// avatar's highest point — `auto_drape`'s rule, for a flat panel or a garment
     /// authored at the origin.
     DropFromAbove,
+    /// Keep the authored coordinates, then push every vertex that starts INSIDE the
+    /// body out to its surface ([`resolve_penetration`]).
+    ///
+    /// This is the mode for a garment modelled on somebody else's body — every vendor
+    /// mesh in `samples/`, once scaled to metres, starts with 13–51 % of its vertices
+    /// embedded up to 80 mm deep. [`AsAuthored`](Self::AsAuthored) does drape those
+    /// without falling through (the static-collider gap is signed), but it never fits
+    /// them: measured over 12 steps the cloth is frozen in barrier contact and moves
+    /// < 1 mm, still embedded, at up to 72 s/step. Resolving the overlap first costs
+    /// 0.2–13.7 s once (measured over the corpus, 31 k–200 k vertices) and made the same
+    /// solves 6.6–50.8× cheaper.
+    ///
+    /// **Resize first** ([`crate::resize`]). This corrects a residual; it is not a fit, and
+    /// it will decline rather than deform a garment that is the wrong size or shape — read
+    /// [`FitReport::inside_after`] and do not assume it reached zero.
+    FittedToBody,
 }
 
 /// The translation that puts `garment` on `avatar`. Never a scale or a rotation:
@@ -290,7 +307,9 @@ pub enum GarmentPlacement {
 /// not a uniform factor.
 pub fn placement_offset(avatar: Aabb, garment: Aabb, placement: GarmentPlacement) -> [f32; 3] {
     match placement {
-        GarmentPlacement::AsAuthored => [0.0; 3],
+        // FittedToBody is authored coordinates plus a per-vertex correction, which is not
+        // expressible as a translation — `drape_on_avatar` applies it after this offset.
+        GarmentPlacement::AsAuthored | GarmentPlacement::FittedToBody => [0.0; 3],
         GarmentPlacement::DropFromAbove => {
             let (a, g) = (avatar.center(), garment.center());
             [
@@ -301,6 +320,668 @@ pub fn placement_offset(avatar: Aabb, garment: Aabb, placement: GarmentPlacement
             ]
         }
     }
+}
+
+/// Clearance left between a pushed-out garment vertex and the body surface. Well under
+/// the contact barrier's activation distance, so a resolved garment is still *in* contact
+/// — cloth resting on a body should be — just not inside it.
+pub const FIT_GAP_M: f32 = 0.004;
+
+/// Projection passes [`resolve_penetration`] will run before giving up.
+///
+/// One pass is not a fixed point, for two reasons. Pushing a vertex out of one facet can
+/// land it inside another wherever the body is concave — armpit, crotch. And the
+/// displacement is spread over the neighbourhood ([`FIT_STRAIN_RATIO`]) rather than applied
+/// whole, so a deep vertex whose neighbours are outside only comes part of the way out per
+/// pass; that is a pleat unfolding, and it takes several.
+///
+/// **The cap is a budget, not a convergence point, and an earlier version of this comment
+/// claimed the opposite.** Measured over the resized sample corpus (both proxies, five
+/// garments, 2026-08-04): exactly **one** of the ten pairs reaches zero — `women-skirt`/male,
+/// at pass 1 — and the other nine are still non-zero at pass 24. What the extra passes buy is
+/// real and large (`bike-jacket`/male 6 095 → 407, `dress-b`/female 23 264 → 213, i.e. 15–109×
+/// fewer), and every sequence is still falling at 24, so the cap is where the returns stopped
+/// paying for the seconds and not where the work finished.
+///
+/// [`FitReport::converged`] is the only thing that says whether it converged. Do not read
+/// the cap as a promise, and do not read a monotone `per_pass` tail as failure — for a
+/// garment that does not fit the body, a non-zero tail is the correct answer.
+pub const FIT_MAX_PASSES: usize = 24;
+
+/// Largest edge-length ratio [`resolve_penetration`] will let its projection introduce,
+/// against the mesh as it arrived — the same quantity, and the same spelling, as the
+/// solver's `ImplicitParams::strain_limit_ratio`.
+///
+/// **This is the constraint whose absence was the bug.** Projecting each vertex
+/// independently to its own nearest surface point is unbounded: measured on
+/// `women-skirt`/female it produced a 27.55× edge and crushed another to 1.8 % of its
+/// authored length, while the solver's strain limiter would never have permitted either.
+///
+/// The bound is enforced on the *difference* between neighbouring vertices'
+/// displacements, not on the displacements themselves, and that distinction is the whole
+/// design: a region that is 74 mm inside the body can translate 74 mm outward with zero
+/// differential and therefore zero distortion, while two neighbours cannot collapse onto
+/// one another. An edge of authored length `L` whose ends differ by at most
+/// `(ratio − 1)·L` ends between `(2 − ratio)·L` and `ratio·L`.
+///
+/// **Why 1.5 and not more.** Stretch and compression are the same number: the floor is
+/// `2 − ratio`, so at 2.0 a collapsed edge becomes permissible and measured it happens
+/// immediately — `women-skirt`/female read `edge_ratio_min` **0.0000** at 2.0 and 0.5045
+/// at 1.5, with a collapsed triangle to match. Loosening it does buy penetration, and that
+/// trade is real — but a degenerate triangle is not a garment, so the ceiling is set by the
+/// floor. (That sensitivity sweep was taken before the relaxation's settle threshold was made
+/// scale-relative; the 1.5 column is re-measured below, the 2.0 and 4.0 columns are not.)
+///
+/// **Measured at 1.5, over EVERY edge**, 2026-08-04, after the settle fix: the bound holds on
+/// all ten corpus pairs — worst max 1.5128 (`dress-b`/female, 0.9 % over), worst min 0.4902
+/// (`men-shirt`/female), zero edges under 1 % of authored length and zero triangles under
+/// 1 % of authored area — re-measured 2026-08-05 over every edge and every triangle, with the
+/// counts: **zero** edges under 0.01 and **zero** triangles under 0.01 on all ten pairs, and
+/// 0–232 edge incidences of 1.19 M above 1.5 (worst `dress-a`/male, 0.02 % of its edges).
+///
+/// Read [`crate::resize::ResizeCheck::edge_ratio_max_all`] and
+/// [`crate::resize::ResizeCheck::area_ratio_min_all`] for this, **not** the filtered pair: the
+/// filtered pair excludes edges under [`crate::resize::EDGE_MEASURABLE_M`] and triangles under
+/// its square, `men-shirt` has 108 682 of the former and 39 369 of the latter, and measured the
+/// exclusion flatters both ends — `men-shirt`/male's area floor reads 0.2731 filtered against
+/// **0.1252** over all triangles, and `bike-jacket`/female's ceiling 2.2379 against **4.4453**.
+pub const FIT_STRAIN_RATIO: f32 = 1.5;
+
+/// Relaxation work [`resolve_penetration`] will spend spreading one pass's displacement
+/// field until it respects [`FIT_STRAIN_RATIO`], as a multiple of the garment's vertex
+/// count.
+///
+/// A correction has to travel: the deepest overlap in the corpus is 76 mm against a
+/// median 5.85 mm edge, so a spike is shared over ~26 rings. The relaxation is worklist
+/// driven, so this is a *ceiling* on work and not a fixed schedule — the queue normally
+/// empties first, and it only ever visits the part of the mesh the field reaches.
+pub const FIT_SPREAD_WORK: usize = 256;
+
+/// What [`resolve_penetration`] did, so a caller can log or assert on it instead of
+/// guessing.
+///
+/// **Both halves matter.** `inside_after == 0` says the garment is out of the body;
+/// [`check`](Self::check) says it is still a garment. A report with the first and not the
+/// second is a regression, not a fix.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FitReport {
+    /// Vertices moved, summed over passes.
+    pub pushed: usize,
+    /// Vertices moved by each pass. A trailing `0` means it converged; a full-length
+    /// vector with a non-zero tail means it ran out of passes with work still to do.
+    pub per_pass: Vec<usize>,
+    /// Vertices **still inside the body** when the pass loop stopped. This is the number
+    /// the operation exists to drive to zero, and it is measured, not inferred from
+    /// `per_pass`.
+    pub inside_after: usize,
+    /// How far the deepest of those is inside, in metres. Zero exactly when
+    /// `inside_after == 0`.
+    pub deepest_inside_m: f32,
+    /// Edge-length and area distortion against the mesh as it arrived, at `factor` 1.0
+    /// (see [`crate::resize::measure`]). The proof of the second half.
+    pub check: crate::resize::ResizeCheck,
+}
+
+impl FitReport {
+    /// Whether the garment is out of the body **and** the loop reached a fixed point.
+    ///
+    /// Not "the last pass moved nothing": with a wrong inside test that is vacuously true,
+    /// and it was — the run that left a `men-shirt` vertex 9.1 mm inside the male armpit
+    /// reported convergence and logged no warning.
+    pub fn converged(&self) -> bool {
+        self.inside_after == 0 && self.deepest_inside_m == 0.0
+    }
+}
+
+/// Closest point on triangle `abc` to `p` (Ericson, *Real-Time Collision Detection* §5.1.5).
+fn closest_on_tri(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
+    let (ab, ac, ap) = (b - a, c - a, p - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = p - b;
+    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        let t = if d1 - d3 != 0.0 { d1 / (d1 - d3) } else { 0.0 };
+        return a + ab * t;
+    }
+    let cp = p - c;
+    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        let t = if d2 - d6 != 0.0 { d2 / (d2 - d6) } else { 0.0 };
+        return a + ac * t;
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        let den = (d4 - d3) + (d5 - d6);
+        let t = if den != 0.0 { (d4 - d3) / den } else { 0.0 };
+        return b + (c - b) * t;
+    }
+    let den = va + vb + vc;
+    if den == 0.0 {
+        return a;
+    }
+    a + ab * (vb / den) + ac * (vc / den)
+}
+
+/// Barycentric coordinates of `q` in triangle `abc`. `q` comes from
+/// [`closest_on_tri`], so it is on the triangle and the result is in `[0, 1]`.
+fn bary(q: Vec3, a: Vec3, b: Vec3, c: Vec3) -> [f32; 3] {
+    let (u, v, w) = (b - a, c - a, q - a);
+    let (d00, d01, d11) = (u.dot(u), u.dot(v), v.dot(v));
+    let den = d00 * d11 - d01 * d01;
+    if den <= 0.0 {
+        return [1.0, 0.0, 0.0]; // degenerate: any corner will do, all three coincide
+    }
+    let (d20, d21) = (w.dot(u), w.dot(v));
+    let b1 = (d11 * d20 - d01 * d21) / den;
+    let b2 = (d00 * d21 - d01 * d20) / den;
+    [1.0 - b1 - b2, b1, b2]
+}
+
+/// A body triangle, its own normal, and the **angle-weighted pseudonormal** at each of its
+/// corners. Which of the two is the surface normal depends on where the closest point
+/// landed; see [`classify`].
+struct BodyTri {
+    p: [Vec3; 3],
+    f: Vec3,
+    n: [Vec3; 3],
+}
+
+impl BodyTri {
+    fn of(mesh: &Object, t: [u32; 3], pn: &[Vec3]) -> Self {
+        let p = t.map(|i| Vec3::from(mesh.positions[i as usize]));
+        Self {
+            p,
+            f: (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero(),
+            n: t.map(|i| pn[i as usize]),
+        }
+    }
+}
+
+/// Angle-weighted pseudonormals, one per vertex of `mesh`.
+///
+/// **This is what makes the inside test right at a concave crease.** The sign of a
+/// point's distance to a mesh is only given by the closest *face's* normal when the
+/// closest feature is that face's interior. Where the closest feature is an edge or a
+/// vertex — every armpit and crotch — the criterion is Bærentzen & Aanæs's angle-weighted
+/// pseudonormal instead, and the face normal gives the wrong answer: measured over all
+/// 70 312 `men-shirt` vertices against the male proxy, the face normal missed 1 vertex
+/// that was 9.1 mm inside the armpit and called 2 more inside that were not.
+///
+/// Interpolating this per-vertex field over the triangle is the smooth version of the
+/// same test — it tends to the vertex pseudonormal at a corner and to the mean of the two
+/// incident faces along an edge, which are exactly the two pseudonormals that matter —
+/// and needs no adjacency structure at query time.
+///
+/// Two things it has to get right, both measured wrong first:
+/// * **Welding.** A glTF proxy splits vertices on UV and normal seams (the male
+///   collision proxy is 10 230 glTF vertices for 7 498 unique positions), and an angle
+///   sum over half of a vertex's incident faces is not its pseudonormal. Positions are
+///   welded on exact bits, which is right because a seam's copies come from one accessor
+///   value; `-0.0` is folded to `0.0` so the two spellings of zero weld together.
+/// * **Zero-area triangles** have no side, so they contribute nothing rather than a
+///   normalised garbage direction.
+///
+/// Ceiling: on a *cropped* body every vertex strictly inside the crop region has its whole
+/// triangle star (`avatar_collider_near` keeps every triangle touching it), so its
+/// pseudonormal is exact. Vertices dragged in only as a third corner sit on the crop's
+/// fringe and get a partial angle sum — harmless here because the fringe is a full margin
+/// (0.10 m) away from any garment vertex being tested.
+fn pseudonormals(mesh: &Object) -> Vec<Vec3> {
+    let key = |p: &[f32; 3]| {
+        // -0.0 and 0.0 are the same coordinate and must weld.
+        p.map(|c| {
+            if c == 0.0 {
+                0.0f32.to_bits()
+            } else {
+                c.to_bits()
+            }
+        })
+    };
+    let mut weld = std::collections::HashMap::with_capacity(mesh.positions.len());
+    let of: Vec<u32> = mesh
+        .positions
+        .iter()
+        .map(|p| {
+            let next = weld.len() as u32;
+            *weld.entry(key(p)).or_insert(next)
+        })
+        .collect();
+
+    let mut acc = vec![Vec3::ZERO; weld.len()];
+    for t in &mesh.tris {
+        let p = t.map(|i| Vec3::from(mesh.positions[i as usize]));
+        let face = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
+        if face == Vec3::ZERO {
+            continue;
+        }
+        for k in 0..3 {
+            let (u, v) = (
+                (p[(k + 1) % 3] - p[k]).normalize_or_zero(),
+                (p[(k + 2) % 3] - p[k]).normalize_or_zero(),
+            );
+            let angle = u.dot(v).clamp(-1.0, 1.0).acos();
+            acc[of[t[k] as usize] as usize] += face * angle;
+        }
+    }
+    of.iter()
+        .map(|&w| acc[w as usize].normalize_or_zero())
+        .collect()
+}
+
+/// Classify the points named by `active`, writing into `disp` the displacement that would
+/// put each [`gap`](FIT_GAP_M) outside the body, or `ZERO` if it is already outside.
+/// Returns how many were inside and how deep the deepest was.
+///
+/// **`active` is an exact restriction, not an approximation.** The body does not move, so
+/// a garment vertex whose position is unchanged since it was last classified has the same
+/// verdict; only vertices the previous pass actually moved — and those it left inside —
+/// need looking at again. Measured on `men-shirt`/male that is 18 670 of 70 312 vertices
+/// on pass 2 and a few hundred by pass 10.
+fn classify(
+    tri: &[BodyTri],
+    pts: &[Vec3],
+    gap: f32,
+    active: &[u32],
+    disp: &mut [Vec3],
+) -> (usize, f32) {
+    // O(active x triangles); spread it over the cores. Single-threaded against the
+    // WHOLE body this took ~17 min for a 70k-vertex shirt. Cropping the body to the
+    // garment's region (below) and threading here puts it at 0.2-6.9 s.
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let chunk = active.len().div_ceil(threads).max(1);
+    let (mut inside, mut deepest) = (0usize, 0.0f32);
+
+    std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        for (ci, part) in active.chunks(chunk).enumerate() {
+            handles.push(s.spawn(move || {
+                let mut local = Vec::with_capacity(part.len());
+                let (mut n_in, mut deep) = (0usize, 0.0f32);
+                for &i in part {
+                    let p = pts[i as usize];
+                    let mut best = f32::INFINITY;
+                    let mut hit: Option<(&BodyTri, Vec3)> = None;
+                    for t in tri {
+                        let q = closest_on_tri(p, t.p[0], t.p[1], t.p[2]);
+                        let d = (p - q).length_squared();
+                        if d < best {
+                            best = d;
+                            hit = Some((t, q));
+                        }
+                    }
+                    let Some((t, q)) = hit else {
+                        local.push(Vec3::ZERO);
+                        continue;
+                    };
+                    // WHICH SIDE is decided by the pseudonormal, interpolated at the
+                    // closest point — the face's own normal where that point is in the
+                    // face's interior, since there the two agree and the interpolation is
+                    // the approximation. WHICH WAY OUT is always the face's own normal.
+                    //
+                    // The split matters. A flat edge between two coplanar triangles has
+                    // the face normal for its pseudonormal, but *interpolated vertex*
+                    // pseudonormals along it carry whatever else those two corners touch:
+                    // on a box's top face the corners average in the side walls, so a
+                    // sheet lying on the diagonal got pushed 45° sideways and a rigid
+                    // translation measured a 1.5x stretch. The face normal has no such
+                    // pollution and, at a crease, is still an escape from the facet that
+                    // is actually closest. A zero normal (a degenerate triangle) has no
+                    // side, so it never flips one.
+                    let l = bary(q, t.p[0], t.p[1], t.p[2]);
+                    let n = if l.iter().all(|&b| b > 1.0e-4) {
+                        t.f
+                    } else {
+                        (t.n[0] * l[0] + t.n[1] * l[1] + t.n[2] * l[2]).normalize_or_zero()
+                    };
+                    let depth = -(p - q).dot(n);
+                    if n != Vec3::ZERO && depth > 0.0 {
+                        local.push(q + t.f * gap - p);
+                        n_in += 1;
+                        deep = deep.max(depth);
+                    } else {
+                        local.push(Vec3::ZERO);
+                    }
+                }
+                (ci, local, n_in, deep)
+            }));
+        }
+        for h in handles {
+            let (ci, local, n_in, deep) = h.join().expect("resolve_penetration worker panicked");
+            for (k, d) in local.into_iter().enumerate() {
+                disp[active[ci * chunk + k] as usize] = d;
+            }
+            inside += n_in;
+            deepest = deepest.max(deep);
+        }
+    });
+    (inside, deepest)
+}
+
+/// Garment vertex adjacency with the **authored** rest length of every incident edge —
+/// the length the strain bound is measured against, so it never drifts with the
+/// correction.
+struct Adj {
+    offs: Vec<u32>,
+    nbr: Vec<u32>,
+    rest: Vec<f32>,
+}
+
+impl Adj {
+    fn of(mesh: &Object) -> Self {
+        let n = mesh.positions.len();
+        let mut deg = vec![0u32; n + 1];
+        // Triangle edges, both directions, duplicates kept: a shared edge simply weighs
+        // twice, which is the usual umbrella weighting and costs no dedup pass.
+        let edges = || {
+            mesh.tris.iter().flat_map(|t| {
+                [
+                    (t[0], t[1]),
+                    (t[1], t[0]),
+                    (t[1], t[2]),
+                    (t[2], t[1]),
+                    (t[2], t[0]),
+                    (t[0], t[2]),
+                ]
+            })
+        };
+        for (u, _) in edges() {
+            deg[u as usize + 1] += 1;
+        }
+        for i in 0..n {
+            deg[i + 1] += deg[i];
+        }
+        let offs = deg.clone();
+        let mut nbr = vec![0u32; offs[n] as usize];
+        let mut rest = vec![0.0f32; offs[n] as usize];
+        let mut at = offs.clone();
+        for (u, v) in edges() {
+            let s = at[u as usize] as usize;
+            at[u as usize] += 1;
+            nbr[s] = v;
+            rest[s] = (Vec3::from(mesh.positions[u as usize])
+                - Vec3::from(mesh.positions[v as usize]))
+            .length();
+        }
+        Self { offs, nbr, rest }
+    }
+
+    fn range(&self, v: usize) -> std::ops::Range<usize> {
+        self.offs[v] as usize..self.offs[v + 1] as usize
+    }
+}
+
+/// Largest amount by which any edge's two ends' displacements differ beyond `budget ×`
+/// its authored length, as a fraction of that length. Zero means the bound holds.
+fn worst_violation(disp: &[Vec3], adj: &Adj, budget: f32) -> f32 {
+    let mut worst = 0.0f32;
+    for v in 0..disp.len() {
+        for i in adj.range(v) {
+            let rest = adj.rest[i];
+            if rest > 0.0 {
+                let over = (disp[adj.nbr[i] as usize] - disp[v]).length() - budget * rest;
+                worst = worst.max(over / rest);
+            }
+        }
+    }
+    worst.max(0.0)
+}
+
+/// Spread `disp` over the mesh until no edge's two ends differ by more than
+/// `(ratio − 1)` of its authored length. In place; returns the largest violation still
+/// present as a fraction of the rest length, so the caller reports what happened instead
+/// of assuming it converged.
+///
+/// Gauss-Seidel driven by a **worklist**: a vertex is revisited only when a neighbour of
+/// it actually changed. The field has to travel roughly `depth / (budget × edge)` ≈ 26
+/// rings on the deepest overlap in the corpus, but it only ever travels through the part
+/// of the mesh that is moving, and it stops the moment nothing changes by more than a small
+/// fraction of the local budget — measured, a fixed sweep schedule spent 10–40× the work for
+/// the same answer.
+/// Deterministic: FIFO order from a fixed initial order, single threaded, which the drape
+/// tests require.
+///
+/// See [`FIT_STRAIN_RATIO`] for why this bounds the edge-length ratio and why the bound is
+/// on the *difference* between neighbours rather than on the displacement itself.
+fn spread(disp: &mut [Vec3], adj: &Adj, ratio: f32, work: usize) -> f32 {
+    /// Over-relaxation. A vertex takes the mean of its incident violations, so without
+    /// this it closes ~1/12 of its own gap per visit on a triangulated mesh and the
+    /// long-wavelength part of the field crawls. Measured on `women-skirt`/female, the
+    /// sweeps needed to reach the bound: 1.0 → over 1 024, 1.9 → 256.
+    const OMEGA: f32 = 1.9;
+    /// Settle threshold as a fraction of the vertex's own tightest budget.
+    ///
+    /// **It must be relative, and an absolute one was the bug.** The constraint is
+    /// `budget × rest` per edge, so on `men-shirt`'s 108 682 authored edges under 1 mm the
+    /// whole budget is sub-micron — an absolute 1 µm threshold declared such a vertex
+    /// settled while it was still violating, and stopped queueing its neighbours, so the
+    /// violation never propagated. Measured: the bound missed by **3.5× its budget**
+    /// (`men-shirt`/male) and 4.0× (`men-shirt`/female) with an absolute 1e-6, against
+    /// ≤ 0.01× with this. f32 can carry it: `disp` is a *displacement* of millimetre
+    /// magnitude, whose ulp is ~1e-10, not an absolute coordinate at 1.5 m whose ulp is
+    /// 1.2e-7.
+    const SETTLED_FRAC: f32 = 1.0e-4;
+    let budget = (ratio - 1.0).max(0.0);
+    let n = disp.len();
+    // Per-vertex settle floor, precomputed: the loop visits a vertex many times.
+    let settled: Vec<f32> = (0..n)
+        .map(|v| {
+            let tight = adj
+                .range(v)
+                .map(|i| adj.rest[i])
+                .filter(|r| *r > 0.0)
+                .fold(f32::INFINITY, f32::min);
+            // Never zero, or a ratio of exactly 1 (budget 0) would spin to the work cap.
+            (SETTLED_FRAC * budget * tight).max(f32::MIN_POSITIVE)
+        })
+        .collect();
+    let mut queued = vec![true; n];
+    let mut q: std::collections::VecDeque<u32> = (0..n as u32).collect();
+    let mut left = work.saturating_mul(n);
+    while let Some(v) = q.pop_front() {
+        if left == 0 {
+            break;
+        }
+        left -= 1;
+        let v = v as usize;
+        queued[v] = false;
+        let mut pull = Vec3::ZERO;
+        for i in adj.range(v) {
+            let diff = disp[adj.nbr[i] as usize] - disp[v];
+            let over = diff.length() - budget * adj.rest[i];
+            if over > 0.0 {
+                // Halve the excess: the other end takes the rest when its turn comes.
+                pull += diff.normalize_or_zero() * (over * 0.5);
+            }
+        }
+        let step = pull * (OMEGA / adj.range(v).len().max(1) as f32);
+        if step.length() <= settled[v] {
+            continue;
+        }
+        disp[v] += step;
+        for i in adj.range(v) {
+            let u = adj.nbr[i];
+            if !queued[u as usize] {
+                queued[u as usize] = true;
+                q.push_back(u);
+            }
+        }
+    }
+    worst_violation(disp, adj, budget)
+}
+
+/// Push every vertex of `garment` that starts inside `body` out to the body's surface plus
+/// `gap`, and keep the result a garment. Iterates to a fixed point, at most
+/// [`FIT_MAX_PASSES`] times.
+///
+/// **Why this exists.** The static mesh collider's gap is signed, so cloth that starts
+/// inside the body is pushed the right way and does not fall through. But the barrier
+/// only *arrests* it — the edge-edge terms are unsigned and brake the climb — so a vertex
+/// 48 mm inside stays 48 mm inside and the garment sits locked in contact instead of
+/// draping. Fitting is a geometry problem; asking the solver to dig a garment out through
+/// a barrier is both wrong and, measured, up to 50× more expensive per step.
+///
+/// **It is the second half of drop-and-fit, not the first.** Resize the garment to the
+/// body ([`crate::resize`]) before calling this: on the corpus that takes the overlap this
+/// has to clear from 13–51 % of vertices down to 3–27 %, and a correction that small is one
+/// this can make without deforming anything.
+///
+/// # Both halves are reported and both are the contract
+///
+/// * [`FitReport::inside_after`] must be 0 — measured with an **angle-weighted
+///   pseudonormal**, which is what makes the test right in an armpit.
+/// * [`FitReport::check`] must show no serious distortion — the displacement field is
+///   spread over the neighbourhood until it respects [`FIT_STRAIN_RATIO`], because
+///   projecting each vertex independently is unbounded and measured 27× edges.
+///
+/// `converged()` requires the first. A pass reporting zero penetration with a stretched
+/// edge is a regression, so assert on both.
+///
+/// # Measured on the whole corpus, 2026-08-04 — and the trade is not free
+///
+/// Five drapeable samples × both shipped proxies, each first resized by [`crate::resize`],
+/// `--release`, whole run at a peak RSS of **204 MB** in 74.5 s. `edge` is min…max of the
+/// per-edge length ratio against the mesh this pass received, **over every edge** — see
+/// [`FIT_STRAIN_RATIO`] for why the filtered pair is the wrong column to read.
+///
+/// | garment | body | resize | inside % → left | deepest left | edge | s |
+/// |---|---|---|---|---|---|---|
+/// | women-skirt | male | 1.3456 | 3.01 % → **0** | — | 0.5001…1.4963 | 0.1 |
+/// | women-skirt | female | 1.1409 | 27.60 % → **3** | 0.64 mm | 0.5060…1.5008 | 0.6 |
+/// | men-shirt | female | 1.1264 | 14.72 % → 210 | 43.0 mm | 0.4902…1.5022 | 2.6 |
+/// | men-shirt | male | *declined* | 26.55 % → 476 | 55.2 mm | 0.4990…1.5008 | 3.5 |
+/// | bike-jacket | male | *no ring* | 19.56 % → 407 | 55.9 mm | 0.5006…1.5011 | 7.5 |
+/// | bike-jacket | female | *no ring* | 15.67 % → 1 072 | 47.9 mm | 0.5000…1.5013 | 4.4 |
+/// | dress-b | male | 1.1348 | 11.01 % → 425 | 11.5 mm | 0.4973…1.5018 | 14.3 |
+/// | dress-b | female | *declined* | 12.48 % → 213 | 6.0 mm | 0.4972…1.5128 | 16.5 |
+/// | dress-a | male | 1.0475 | 13.41 % → 1 472 | 57.9 mm | 0.4975…1.5031 | 17.4 |
+/// | dress-a | female | 1.1385 | 6.17 % → 773 | 46.7 mm | 0.4989…1.5010 | 6.0 |
+///
+/// **Read the first two rows and then the rest.** `women-skirt` is the one garment the
+/// resize genuinely enlarged onto the body, and there this pass does what it is for: 0 and
+/// 3 vertices left, sub-millimetre, no distortion worth the name. Everywhere else the
+/// resize declined or barely moved, the garment arrives 6–27 % embedded up to 58 mm deep,
+/// and **that is not a residual — it is a garment that does not fit this body.** No
+/// distortion-bounded projection can fix it and this one does not pretend to.
+///
+/// The alternative was measured on the same corpus by removing the bound: 0 vertices inside
+/// on 9 of 10 pairs after two passes, at edge ratios of **0.0000…75.77** — collapsed edges
+/// and triangles, area ratios to 962× — i.e. zero penetration bought by destroying the
+/// mesh. That is the regression this refuses to ship.
+///
+/// **Preconditions.** `body` must be closed and outward-wound — the same requirement
+/// [`avatar_collider`] documents and `tests/avatar_bundle.rs` pins against the shipped
+/// proxies. Both meshes must already be in metres and in the avatar's frame; this moves
+/// vertices and never scales, so a garment authored in centimetres must be converted
+/// before it gets here (`engine_io::load_mesh_in`).
+///
+/// Only the garment is touched; `body` is read.
+pub fn resolve_penetration(
+    body: &Object,
+    garment: &mut Object,
+    gap: f32,
+) -> Result<FitReport, AvatarError> {
+    let garment_bb = checked_bounds("garment", garment)?;
+    checked_bounds("avatar", body)?;
+
+    // The nearest body triangle to any garment vertex lies within the garment's own box,
+    // so cropping loses nothing and is the difference between seconds and minutes. The
+    // margin must exceed the deepest overlap we expect to correct (80 mm, measured).
+    let near = avatar_collider_near(body, garment_bb, 0.10).unwrap_or_else(|_| body.clone());
+    let pn = pseudonormals(&near);
+    let tri: Vec<BodyTri> = near
+        .tris
+        .iter()
+        .map(|t| BodyTri::of(&near, *t, &pn))
+        .collect();
+    if tri.is_empty() {
+        return Ok(FitReport::default()); // garment nowhere near the body: nothing to fix
+    }
+
+    let authored: Vec<Vec3> = garment.positions.iter().map(|p| Vec3::from(*p)).collect();
+    let adj = Adj::of(garment);
+    // The strain bound is on the TOTAL displacement from the authored mesh, not on one
+    // pass's: constraining each pass separately lets N passes compound to N times the
+    // budget, and measured it did — `women-skirt`/female reached a 2.53x edge in two
+    // passes of a bound that permits 1.5.
+    let n = authored.len();
+    let mut total = vec![Vec3::ZERO; n];
+    let mut pts = authored.clone();
+    let mut disp = vec![Vec3::ZERO; n];
+    let mut active: Vec<u32> = (0..n as u32).collect();
+    let mut report = FitReport::default();
+    let mut violation = 0.0f32;
+    // `FIT_MAX_PASSES` *corrections*, and one more classification than that, because what
+    // the report says must be the state the garment is actually left in: measuring before
+    // the last correction and calling it `inside_after` is the same class of lie as the
+    // convergence flag this replaces.
+    for pass in 0..=FIT_MAX_PASSES {
+        disp.fill(Vec3::ZERO);
+        let (inside, deepest) = classify(&tri, &pts, gap, &active, &mut disp);
+        report.per_pass.push(inside);
+        report.pushed += inside;
+        (report.inside_after, report.deepest_inside_m) = (inside, deepest);
+        if inside == 0 || pass == FIT_MAX_PASSES {
+            break;
+        }
+        let mut cand: Vec<Vec3> = total.iter().zip(&disp).map(|(t, d)| *t + *d).collect();
+        violation = spread(&mut cand, &adj, FIT_STRAIN_RATIO, FIT_SPREAD_WORK);
+        // Next pass need only look at vertices that moved, plus the ones this pass found
+        // inside and could not move far enough — everything else is where it was, and the
+        // body has not moved either.
+        active = (0..n as u32)
+            .filter(|&i| {
+                let i = i as usize;
+                cand[i] != total[i] || disp[i] != Vec3::ZERO
+            })
+            .collect();
+        total = cand;
+        for ((p, a), t) in pts.iter_mut().zip(&authored).zip(&total) {
+            *p = *a + *t;
+        }
+    }
+    garment.positions = pts.iter().map(|p| [p.x, p.y, p.z]).collect();
+    let authored: Vec<[f32; 3]> = authored.iter().map(|p| [p.x, p.y, p.z]).collect();
+    report.check = crate::resize::measure(&authored, garment, 1.0);
+
+    if !report.converged() {
+        tracing::warn!(
+            garment = %garment.name,
+            avatar = %body.name,
+            per_pass = ?report.per_pass,
+            inside_after = report.inside_after,
+            deepest_inside_m = report.deepest_inside_m,
+            "garment still intersects the body after {FIT_MAX_PASSES} passes; the contact \
+             barrier must resolve the remainder"
+        );
+    } else {
+        tracing::info!(
+            garment = %garment.name,
+            avatar = %body.name,
+            pushed = report.pushed,
+            per_pass = ?report.per_pass,
+            body_tris = tri.len(),
+            edge_ratio_all = ?(report.check.edge_ratio_min_all, report.check.edge_ratio_max_all),
+            area_ratio_all = ?(report.check.area_ratio_min_all, report.check.area_ratio_max_all),
+            degenerate_edges = report.check.degenerate_edges,
+            degenerate_tris = report.check.degenerate_tris,
+            strain_violation = violation,
+            "garment penetration resolved"
+        );
+    }
+    Ok(report)
 }
 
 /// Build a ready-to-drape [`Scene`] from a body proxy, a garment mesh and a fabric.
@@ -335,6 +1016,11 @@ pub fn drape_on_avatar(
             p[k] += offset[k];
         }
     }
+    // After the translation, before the scene: the projection needs the garment where it
+    // will actually sit, and `drape_scene` consumes the final positions.
+    if placement == GarmentPlacement::FittedToBody {
+        resolve_penetration(avatar, &mut cloth, FIT_GAP_M)?;
+    }
     if cloth.uvs.len() != cloth.positions.len() {
         tracing::warn!(
             garment = %garment.name,
@@ -358,7 +1044,7 @@ pub fn drape_on_avatar(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::auto_drape::cloth_plane;
     use crate::{ColliderSpec, Material};
@@ -815,5 +1501,565 @@ mod tests {
         let base = scene.objects[0].positions.len();
         assert!(solver.state.is_pinned(base));
         assert!(solver.state.is_pinned(base + 3));
+    }
+
+    // ---- penetration resolution -----------------------------------------------
+    // The body is `box_mesh`, which is closed and outward-wound, so it satisfies
+    // `resolve_penetration`'s stated precondition. Every assertion here is about the
+    // SIGN of the correction, which is the part that was wrong in the solver.
+
+    /// A grid of cloth vertices on the plane `y`, spanning `[-half, half]` in x and z.
+    fn cloth_grid(name: &str, n: usize, y: f32, half: f32) -> Object {
+        let mut positions = Vec::new();
+        let step = if n > 1 {
+            2.0 * half / (n - 1) as f32
+        } else {
+            0.0
+        };
+        for j in 0..n {
+            for i in 0..n {
+                positions.push([-half + i as f32 * step, y, -half + j as f32 * step]);
+            }
+        }
+        let mut tris = Vec::new();
+        for j in 0..n.saturating_sub(1) {
+            for i in 0..n.saturating_sub(1) {
+                let v = (j * n + i) as u32;
+                let r = v + n as u32;
+                tris.push([v, r, v + 1]);
+                tris.push([v + 1, r, r + 1]);
+            }
+        }
+        let mut o = box_mesh(name, [0.0; 3], [1.0; 3]);
+        o.positions = positions;
+        o.tris = tris;
+        o
+    }
+
+    /// A closed box wound **outward**, and it proves it before returning.
+    ///
+    /// Deliberately not `box_mesh`: that fixture is wound INWARD (its bottom face
+    /// `[0,2,1]` has normal `+Y`, which points into the solid), which is fine for the
+    /// tests that only care about statics and reindexing, and exactly wrong here. The
+    /// shipped proxies are outward-wound — `tests/avatar_bundle.rs`'s
+    /// `collision_proxies_are_outward_wound` is what pins that — so a sign test must use
+    /// a body with the same handedness or it asserts the opposite of the truth.
+    pub(crate) fn body_box() -> Object {
+        let (min, max) = ([-0.5f32, 0.0, -0.5], [0.5f32, 1.0, 0.5]);
+        let p = [
+            [min[0], min[1], min[2]], // 0
+            [max[0], min[1], min[2]], // 1
+            [max[0], min[1], max[2]], // 2
+            [min[0], min[1], max[2]], // 3
+            [min[0], max[1], min[2]], // 4
+            [max[0], max[1], min[2]], // 5
+            [max[0], max[1], max[2]], // 6
+            [min[0], max[1], max[2]], // 7
+        ];
+        let tris = vec![
+            [0, 1, 2],
+            [0, 2, 3], // bottom, normal -Y
+            [4, 6, 5],
+            [4, 7, 6], // top,    normal +Y
+            [0, 5, 1],
+            [0, 4, 5], // -Z
+            [3, 2, 6],
+            [3, 6, 7], // +Z
+            [0, 3, 7],
+            [0, 7, 4], // -X
+            [1, 5, 6],
+            [1, 6, 2], // +X
+        ];
+        let centre = Vec3::new(0.0, 0.5, 0.0);
+        for t in &tris {
+            let (a, b, c) = (
+                Vec3::from(p[t[0] as usize]),
+                Vec3::from(p[t[1] as usize]),
+                Vec3::from(p[t[2] as usize]),
+            );
+            let n = (b - a).cross(c - a);
+            let outward = (a + b + c) / 3.0 - centre;
+            assert!(
+                n.dot(outward) > 0.0,
+                "body_box triangle {t:?} is wound inward (n {n:?} vs outward {outward:?})"
+            );
+        }
+        let mut o = box_mesh("body", min, max);
+        o.positions = p.to_vec();
+        o.tris = tris;
+        o.is_static = true;
+        o
+    }
+
+    /// A prism whose cross-section is a disc with a **30° wedge notched out**, so the
+    /// vertical edge at the notch's apex is a concave crease of only 30° exterior opening
+    /// — the synthetic armpit, and the smallest closed mesh on which the closest *face's*
+    /// normal gets the inside test wrong.
+    ///
+    /// Cross-section walks the reflex apex at the origin, out along the notch's upper wall,
+    /// round the unit circle, and back along the lower wall. Star-shaped from the apex, so
+    /// a fan from it triangulates both caps without leaving the polygon.
+    fn notched_prism() -> Object {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        let half = 15.0f32.to_radians();
+        let ring = |a: f32| [a.cos(), a.sin()];
+        let xz = [
+            [0.0, 0.0], // 0: apex, reflex, interior angle 330°
+            ring(half), // 1: upper notch mouth
+            ring(FRAC_PI_2),
+            ring(PI),
+            ring(3.0 * FRAC_PI_2),
+            ring(-half), // 5: lower notch mouth
+        ];
+        let m = xz.len();
+        let mut positions: Vec<[f32; 3]> = xz.iter().map(|p| [p[0], 0.0, p[1]]).collect();
+        positions.extend(xz.iter().map(|p| [p[0], 1.0, p[1]]));
+        let (lo, hi) = (0u32, m as u32);
+
+        let mut tris = Vec::new();
+        for i in 0..m as u32 {
+            let j = (i + 1) % m as u32;
+            // Side quad, wound so its normal points away from the y axis.
+            tris.push([lo + i, hi + j, lo + j]);
+            tris.push([lo + i, hi + i, hi + j]);
+        }
+        for i in 1..m as u32 - 1 {
+            tris.push([lo, lo + i, lo + i + 1]); // bottom cap, fanned from the apex
+            tris.push([hi, hi + i + 1, hi + i]); // top cap
+        }
+
+        // Outward winding is this fixture's whole point, so prove it rather than eyeball
+        // it: a closed outward-wound mesh has positive signed volume.
+        let vol: f32 = tris
+            .iter()
+            .map(|t| {
+                let p = t.map(|i| Vec3::from(positions[i as usize]));
+                p[0].dot(p[1].cross(p[2])) / 6.0
+            })
+            .sum();
+        assert!(vol > 0.1, "notched_prism is wound inward (volume {vol})");
+
+        let mut o = box_mesh("notch", [-1.0, 0.0, -1.0], [1.0, 1.0, 1.0]);
+        o.positions = positions;
+        o.tris = tris;
+        o.is_static = true;
+        o
+    }
+
+    /// A point at polar angle `deg` and radius `r` about the notch apex, at mid-height.
+    fn in_notch_solid(deg: f32, r: f32) -> Vec3 {
+        let a = deg.to_radians();
+        Vec3::new(r * a.cos(), 0.5, r * a.sin())
+    }
+
+    #[test]
+    fn pseudonormals_do_not_care_how_the_surface_is_triangulated() {
+        // Angle weighting is what makes a pseudonormal a property of the SURFACE rather
+        // than of its triangulation. Flip the diagonal of one crease wall's quad: identical
+        // geometry, identical winding, no new vertices — but the apex now has ONE incident
+        // triangle on that wall instead of two, spanning the same 90° corner. Angle
+        // weighting is unmoved; counting faces unweighted tilts the apex pseudonormal by
+        // 2.4°, and the shipped proxies are not uniformly triangulated.
+        let body = notched_prism();
+        let want = pseudonormals(&body)[0];
+
+        // The upper wall's quad in boundary order: apex_bot 0, apex_top 6, mouth_top 7,
+        // mouth_bot 1. It ships split on the 0–7 diagonal; re-split it on 6–1.
+        let mut flipped = body.clone();
+        flipped.tris.retain(|t| {
+            let s: std::collections::HashSet<u32> = t.iter().copied().collect();
+            !s.is_subset(&[0u32, 6, 7, 1].into_iter().collect())
+        });
+        assert_eq!(flipped.tris.len(), body.tris.len() - 2, "wall not replaced");
+        flipped.tris.push([0, 6, 1]);
+        flipped.tris.push([6, 7, 1]);
+        assert_eq!(
+            flipped.tris.iter().filter(|t| t.contains(&0)).count(),
+            body.tris.iter().filter(|t| t.contains(&0)).count() - 1,
+            "the flip did not change the apex's triangle count, so this proves nothing"
+        );
+
+        let got = pseudonormals(&flipped)[0];
+        assert!(
+            got.dot(want) > 0.99999,
+            "retriangulating one wall moved the apex pseudonormal {want:?} -> {got:?}"
+        );
+    }
+
+    #[test]
+    fn pseudonormals_survive_a_uv_seam_split() {
+        // The shipped proxies are glTF, which splits vertices on UV and normal seams — the
+        // male collision proxy is 10 230 glTF vertices for 7 498 unique positions. An angle
+        // sum over half a vertex's incident faces is not its pseudonormal, so the split
+        // copies have to weld back together.
+        let body = notched_prism();
+        let want = pseudonormals(&body);
+
+        // Split vertex 0 (the notch apex, whose star spans both crease walls) into two
+        // co-located copies and hand half of its triangles to each.
+        let mut split = body.clone();
+        let dup = split.positions.len() as u32;
+        split.positions.push(body.positions[0]);
+        let mut flip = false;
+        for t in &mut split.tris {
+            if t.contains(&0) {
+                flip = !flip;
+                if flip {
+                    for i in t.iter_mut().filter(|i| **i == 0) {
+                        *i = dup;
+                    }
+                }
+            }
+        }
+        assert!(flip || split.tris.iter().flatten().any(|&i| i == dup));
+
+        let got = pseudonormals(&split);
+        for (k, w) in want.iter().enumerate() {
+            assert!(
+                got[k].dot(*w) > 0.9999,
+                "vertex {k}: split {:?} vs welded {w:?}",
+                got[k]
+            );
+        }
+        assert!(got[dup as usize].dot(want[0]) > 0.9999, "the split copy");
+    }
+
+    #[test]
+    fn a_concave_crease_needs_a_pseudonormal_and_the_closest_face_normal_gets_it_wrong() {
+        let body = notched_prism();
+        let pn = pseudonormals(&body);
+        let tri: Vec<BodyTri> = body
+            .tris
+            .iter()
+            .map(|t| BodyTri::of(&body, *t, &pn))
+            .collect();
+
+        // Both points are INSIDE the solid — the notch spans only ±15° about +x — and both
+        // are in the apex edge's Voronoi region, so the two crease faces are exactly
+        // equidistant and the closest point is the apex for both of them. One sits on the
+        // wrong side of the lower wall's plane, the other on the wrong side of the upper's,
+        // so a single face normal must misclassify one of them whichever way the tie falls.
+        let pts = [in_notch_solid(150.0, 0.05), in_notch_solid(210.0, 0.05)];
+        let mut disp = vec![Vec3::ZERO; 2];
+        let (inside, deepest) = classify(&tri, &pts, FIT_GAP_M, &[0, 1], &mut disp);
+        assert_eq!(inside, 2, "pseudonormal missed a vertex inside the crease");
+        // 0.05 m out along a ray 150° from the +x bisector: depth = 0.05·cos(30°).
+        assert!(
+            (deepest - 0.05 * 30.0f32.to_radians().cos()).abs() < 1.0e-4,
+            "deepest {deepest}"
+        );
+
+        // The same test signed by the closest FACE's normal — what this used to do — and
+        // it gets one of the two wrong. This is the assertion that makes the fixture
+        // discriminating: without it, a pseudonormal test could pass on a mesh where the
+        // face normal would have done just as well.
+        let face_verdicts = pts.map(|p| {
+            let mut best = f32::INFINITY;
+            let mut n = Vec3::ZERO;
+            let mut bq = p;
+            for t in &tri {
+                let q = closest_on_tri(p, t.p[0], t.p[1], t.p[2]);
+                let d = (p - q).length_squared();
+                if d < best {
+                    best = d;
+                    bq = q;
+                    n = (t.p[1] - t.p[0]).cross(t.p[2] - t.p[0]).normalize_or_zero();
+                }
+            }
+            (p - bq).dot(n) < 0.0
+        });
+        assert!(
+            !face_verdicts[0] || !face_verdicts[1],
+            "the closest face normal classified both crease points correctly, so this \
+             fixture does not discriminate and the test proves nothing"
+        );
+    }
+
+    #[test]
+    fn resolve_penetration_pushes_cloth_out_and_leaves_a_gap() {
+        let body = body_box();
+        // A sheet 10 mm under the box's top face. Shallow and one-sided, so every vertex
+        // needs the same outward push and the strain bound costs nothing — this is what a
+        // *resized* garment's residual overlap looks like.
+        let mut cloth = cloth_grid("sheet", 7, 0.99, 0.3);
+        let before = cloth.positions.clone();
+
+        let r = resolve_penetration(&body, &mut cloth, FIT_GAP_M).expect("resolve");
+
+        assert_eq!(r.pushed, before.len(), "every vertex started inside");
+        assert!(r.converged(), "per_pass {:?} did not end in 0", r.per_pass);
+        assert_eq!(r.inside_after, 0);
+        assert_eq!(r.deepest_inside_m, 0.0);
+        // Nothing may remain inside, and everything must clear the surface by ~FIT_GAP_M.
+        for p in &cloth.positions {
+            let inside = (0..3).all(|k| {
+                let (lo, hi) = ([-0.5, 0.0, -0.5][k], [0.5, 1.0, 0.5][k]);
+                p[k] > lo && p[k] < hi
+            });
+            assert!(!inside, "vertex {p:?} is still inside the body");
+            assert!(
+                p[1] >= 1.0 + FIT_GAP_M - 1.0e-5,
+                "vertex {p:?} did not clear the top face by the gap"
+            );
+        }
+        let moved = cloth
+            .positions
+            .iter()
+            .zip(&before)
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(moved, before.len(), "some vertices were not corrected");
+        // A uniform push is a translation, so it must cost NO distortion at all. This is
+        // the other half of the contract and it is the half that used to be unmeasured.
+        assert!(
+            r.check.edge_spread() < 1.0e-4,
+            "a uniform push distorted the sheet: {:?}",
+            r.check
+        );
+    }
+
+    #[test]
+    fn the_strain_bound_holds_even_when_the_overlap_cannot_be_resolved() {
+        // A sheet through the MIDDLE of the box: every vertex 0.5 m inside, and opposite
+        // halves need pushing in opposite directions. There is no way out of this that
+        // keeps the sheet a sheet, so the operation must decline honestly rather than
+        // shred it — the whole point of FIT_STRAIN_RATIO.
+        let body = body_box();
+        let mut cloth = cloth_grid("sheet", 7, 0.5, 0.3);
+        let r = resolve_penetration(&body, &mut cloth, FIT_GAP_M).expect("resolve");
+
+        assert!(
+            !r.converged() && r.inside_after > 0 && r.deepest_inside_m > 0.0,
+            "an unresolvable overlap reported success: {r:?}"
+        );
+        // Bounded, both ways, with room for the relaxation's residual (measured 0.3 %).
+        // Over **every** edge, including sub-`EDGE_MEASURABLE_M` ones: the filtered pair
+        // excluded a quarter of `men-shirt`'s edges and hid a 1.796x stretch there.
+        let (lo, hi) = (2.0 - FIT_STRAIN_RATIO, FIT_STRAIN_RATIO);
+        assert!(
+            r.check.edge_ratio_max_all <= hi * 1.02 && r.check.edge_ratio_min_all >= lo * 0.98,
+            "edge ratio {:?} escaped [{lo}, {hi}]",
+            (r.check.edge_ratio_min_all, r.check.edge_ratio_max_all)
+        );
+        // No collapsed edge and no collapsed triangle: the acceptance criterion's other
+        // two halves, which the old unbounded projection failed (measured 1.8 % of an edge).
+        //
+        // **Both over the unfiltered pair.** Asserting an acceptance criterion on the
+        // *filtered* fields was the defect: they skip edges under `EDGE_MEASURABLE_M` and
+        // triangles under its square, which on `men-shirt` is a quarter of the edges and
+        // 30.7 % of the triangles, so a collapse there would never have failed a test.
+        assert!(
+            r.check.edge_ratio_min_all > 0.01,
+            "an edge collapsed: {:?}",
+            r.check
+        );
+        assert!(
+            r.check.area_ratio_min_all > 0.01,
+            "a triangle collapsed: {:?}",
+            r.check
+        );
+        // This fixture excludes nothing, so the two pairs coincide here and the assertions
+        // above cannot themselves prove the `_all` fields see the excluded geometry. That is
+        // pinned where the instrument lives, on a mesh built to be excluded:
+        // `resize::tests::a_collapse_among_the_excluded_geometry_is_still_reported`.
+        assert_eq!(
+            (r.check.degenerate_edges, r.check.degenerate_tris),
+            (0, 0),
+            "{:?}",
+            r.check
+        );
+
+        // `inside_after` is counted over an ACTIVE SUBSET of the vertices, on the argument
+        // that a vertex nothing moved cannot have changed sides. Check that against an
+        // independent sweep over EVERY vertex, or the report is only as good as the
+        // argument. This fixture is the one that keeps the spread busiest.
+        let pn = pseudonormals(&body);
+        let tri: Vec<BodyTri> = body
+            .tris
+            .iter()
+            .map(|t| BodyTri::of(&body, *t, &pn))
+            .collect();
+        let pts: Vec<Vec3> = cloth.positions.iter().map(|p| Vec3::from(*p)).collect();
+        let all: Vec<u32> = (0..pts.len() as u32).collect();
+        let mut disp = vec![Vec3::ZERO; pts.len()];
+        let (inside, deepest) = classify(&tri, &pts, FIT_GAP_M, &all, &mut disp);
+        assert_eq!(inside, r.inside_after, "the active set lost a vertex");
+        assert!((deepest - r.deepest_inside_m).abs() < 1.0e-6, "{deepest}");
+    }
+
+    /// A partial overlap costs MANY passes and needs the whole strain budget, so this pins
+    /// the two constants nothing else did — mutating [`FIT_MAX_PASSES`] to 1 or
+    /// [`FIT_STRAIN_RATIO`] to 1.02 left every other test in this file green.
+    ///
+    /// The fixture is a sheet twice the box's width laid through it at y = 0.7: the middle
+    /// 5 edges are inside and must climb 0.304 m to the top face, while the rim is already
+    /// outside and must not move. The bound is on the *difference* between neighbours, so
+    /// that climb can only be paid over rings — 0.304 m at a budget of 0.5 x 0.2 m per edge
+    /// is at least 3 rings of slope, and each pass buys part of it. Squeeze the budget and
+    /// the slope no longer fits in the rim; cap the passes at 1 and it never gets there.
+    ///
+    /// Measured: 25 inside at pass 0, 15 left after 24 passes at 53 mm, edge ratio
+    /// 0.614…1.498, i.e. it uses essentially the whole budget and still cannot finish. That
+    /// residual is a right-angle corner, not a bug — see the assertion notes.
+    #[test]
+    fn a_partial_overlap_needs_several_passes_and_the_whole_strain_budget() {
+        let body = body_box();
+        let mut cloth = cloth_grid("half-in", 21, 0.7, 2.0);
+        let r = resolve_penetration(&body, &mut cloth, FIT_GAP_M).expect("resolve");
+
+        // Measured, and stated rather than asserted away: this fixture does NOT reach zero.
+        // 15 of its 441 vertices sit at the box's top-face perimeter, where the sheet has to
+        // turn a right angle, and they stay ~53 mm inside. A cube is a harsher body than an
+        // avatar; what matters here is that the passes make progress and the bound holds.
+        assert!(
+            r.inside_after < r.per_pass[0],
+            "no progress at all across the passes: {:?}",
+            r.per_pass
+        );
+        // One pass cannot do it, and that is the property FIT_MAX_PASSES exists for. The
+        // count is measured; the assertion is only that it is well past 1.
+        assert!(
+            r.per_pass.len() > 4,
+            "converged in {} passes — the fixture stopped discriminating FIT_MAX_PASSES: {:?}",
+            r.per_pass.len(),
+            r.per_pass
+        );
+        // ...and it needed most of the budget to do it, which is what makes a squeezed
+        // FIT_STRAIN_RATIO fail rather than merely run slower.
+        assert!(
+            r.check.edge_ratio_max_all > 1.0 + 0.5 * (FIT_STRAIN_RATIO - 1.0),
+            "used only {:.4} of the {FIT_STRAIN_RATIO} budget — not discriminating",
+            r.check.edge_ratio_max_all
+        );
+        let (lo, hi) = (2.0 - FIT_STRAIN_RATIO, FIT_STRAIN_RATIO);
+        assert!(
+            r.check.edge_ratio_max_all <= hi * 1.02 && r.check.edge_ratio_min_all >= lo * 0.98,
+            "edge ratio {:?} escaped [{lo}, {hi}]",
+            (r.check.edge_ratio_min_all, r.check.edge_ratio_max_all)
+        );
+    }
+
+    #[test]
+    fn resolve_penetration_is_idempotent_and_leaves_outside_cloth_alone() {
+        let body = body_box();
+        // Well clear of the box: nothing to do, and nothing may be touched.
+        let mut clear = cloth_grid("clear", 5, 3.0, 0.3);
+        let untouched = clear.positions.clone();
+        let r = resolve_penetration(&body, &mut clear, FIT_GAP_M).expect("resolve");
+        assert_eq!(r.pushed, 0, "cloth 2 m above the body was moved");
+        assert_eq!(clear.positions, untouched);
+        assert!(r.converged());
+
+        // Resolving an already-resolved garment must be a no-op — otherwise repeated
+        // drapes would walk the garment away from the body.
+        let mut cloth = cloth_grid("sheet", 7, 0.99, 0.3);
+        resolve_penetration(&body, &mut cloth, FIT_GAP_M).expect("first");
+        let after_first = cloth.positions.clone();
+        let second = resolve_penetration(&body, &mut cloth, FIT_GAP_M).expect("second");
+        assert_eq!(
+            second.pushed, 0,
+            "second pass moved {} vertices",
+            second.pushed
+        );
+        assert_eq!(cloth.positions, after_first, "not idempotent");
+    }
+
+    #[test]
+    fn a_deep_one_sided_overlap_resolves_without_distortion() {
+        // The case the strain bound must NOT obstruct: the whole garment is deep inside the
+        // body but every vertex needs the same displacement, so translating it out costs
+        // zero differential. 0.4 m is 68 authored edges' worth of travel — an absolute
+        // per-vertex clamp would never have got there, which is why the bound is on the
+        // difference between neighbours instead.
+        let body = body_box();
+        // Narrow enough that the top face is the nearest feature for EVERY vertex (0.4 m
+        // up against 0.45 m sideways), so the whole sheet wants the same displacement.
+        let mut cloth = cloth_grid("sheet", 7, 0.6, 0.05);
+        let r = resolve_penetration(&body, &mut cloth, FIT_GAP_M).expect("resolve");
+        assert_eq!(r.inside_after, 0, "per_pass {:?}", r.per_pass);
+        assert!(
+            r.check.edge_spread() < 1.0e-4,
+            "a rigid translation distorted the sheet: {:?}",
+            r.check
+        );
+        let up = cloth.positions[0][1] - 0.6;
+        assert!(up > 0.4, "the sheet only rose {up} m");
+    }
+
+    #[test]
+    fn resolve_penetration_reports_the_residual_it_leaves() {
+        // The defect class this fixes: `converged()` used to mean "the last pass moved
+        // nothing", which a wrong inside test makes vacuously true. It must mean "no
+        // vertex is inside", and the depth must agree with it.
+        let body = notched_prism();
+        let mut cloth = cloth_grid("sheet", 3, 0.5, 0.02);
+        // Sit the little sheet in the crease, inside the solid, where the old face-normal
+        // test read one of its corners as already outside.
+        for p in &mut cloth.positions {
+            let q = in_notch_solid(180.0, 0.04);
+            *p = [p[0] + q.x, q.y, p[2] + q.z];
+        }
+        let r = resolve_penetration(&body, &mut cloth, FIT_GAP_M).expect("resolve");
+        assert_eq!(
+            r.converged(),
+            r.inside_after == 0,
+            "converged() and inside_after disagree: {r:?}"
+        );
+        assert_eq!(r.inside_after == 0, r.deepest_inside_m == 0.0, "{r:?}");
+        assert!(r.pushed > 0, "nothing was found inside the crease at all");
+    }
+
+    #[test]
+    fn fitted_to_body_placement_corrects_what_as_authored_leaves_embedded() {
+        let body = body_box();
+        let cloth = cloth_grid("sheet", 7, 0.5, 0.3);
+
+        let as_authored = drape_on_avatar(
+            &body,
+            &cloth,
+            FabricPreset::Cotton,
+            GarmentPlacement::AsAuthored,
+        )
+        .expect("as authored");
+        let fitted = drape_on_avatar(
+            &body,
+            &cloth,
+            FabricPreset::Cotton,
+            GarmentPlacement::FittedToBody,
+        )
+        .expect("fitted");
+
+        // Same object layout either way; only the cloth positions differ.
+        let pick = |s: &Scene| {
+            s.objects
+                .iter()
+                .find(|o| !o.is_static)
+                .expect("a dynamic cloth object")
+                .positions
+                .clone()
+        };
+        let (a, f) = (pick(&as_authored), pick(&fitted));
+        assert_eq!(a.len(), f.len());
+        assert_ne!(a, f, "FittedToBody made no difference to the garment");
+        // AsAuthored must still be the authored coordinates — the mode's whole contract.
+        assert_eq!(a, cloth.positions);
+    }
+
+    #[test]
+    fn placement_offset_never_translates_a_fitted_garment() {
+        // FittedToBody corrects per-vertex; if it also translated, the correction would
+        // be computed against a body the garment is no longer positioned against.
+        let avatar = Aabb {
+            min: [-0.5, 0.0, -0.5],
+            max: [0.5, 1.0, 0.5],
+        };
+        let garment = Aabb {
+            min: [-0.3, 0.4, -0.3],
+            max: [0.3, 0.6, 0.3],
+        };
+        assert_eq!(
+            placement_offset(avatar, garment, GarmentPlacement::FittedToBody),
+            [0.0; 3]
+        );
     }
 }

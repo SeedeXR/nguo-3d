@@ -81,10 +81,16 @@ impl Scene {
     /// Concatenate all objects into one vertex space and produce the solver-side
     /// [`SimState`] plus the representative dynamic [`Material`]. Per-vertex mass
     /// = areal_density * total_area / vertex_count (uniform lumped mass).
-    fn lower(&self) -> (SimState, Material) {
+    /// The third return is the **static mesh collider mask**, parallel to the vertices:
+    /// true exactly for vertices of an `is_static` object. Deliberately not the same
+    /// thing as `pin_flags`, which also carries authored pins on dynamic cloth — a pinned
+    /// cloth vertex is not body geometry, and signing contact against a pinned sheet
+    /// pushes cloth through it (`ImplicitSolver::set_static_collider_verts`).
+    fn lower(&self) -> (SimState, Material, Vec<bool>) {
         let mut positions: Vec<Vec3> = Vec::new();
         let mut tris: Vec<[u32; 3]> = Vec::new();
         let mut pin_flags: Vec<bool> = Vec::new();
+        let mut static_obj: Vec<bool> = Vec::new();
         let mut material = Material::default();
         // Material-space UVs, concatenated parallel to positions. Kept only if EVERY
         // object supplies them (parallel-or-empty), so downstream `SimState::uvs` is
@@ -97,6 +103,7 @@ impl Scene {
             for p in &obj.positions {
                 positions.push(Vec3::from(*p));
                 pin_flags.push(obj.is_static);
+                static_obj.push(obj.is_static);
             }
             for t in &obj.tris {
                 tris.push([t[0] + base, t[1] + base, t[2] + base]);
@@ -141,12 +148,12 @@ impl Scene {
             vertex_mass,
             "scene lowered"
         );
-        (state, material)
+        (state, material, static_obj)
     }
 
     /// Lower to a ready-to-run XPBD preview-tier [`Solver`].
     pub fn build(&self) -> Solver {
-        let (state, material) = self.lower();
+        let (state, material, _) = self.lower();
         let mut solver = Solver::new(state, self.solver_params(material.stretch_compliance()));
         solver.set_colliders(self.colliders.iter().map(|c| c.to_core()).collect());
         solver
@@ -156,7 +163,7 @@ impl Scene {
     /// caller supplies the linear solver (`engine_core::CgCpu` or the GPU PCG)
     /// per `step`. Spring stiffness comes from the material's Young's modulus.
     pub fn build_implicit(&self) -> ImplicitSolver {
-        let (state, material) = self.lower();
+        let (state, material, static_obj) = self.lower();
         let c = &self.config;
         let params = ImplicitParams {
             dt: c.dt,
@@ -202,6 +209,11 @@ impl Scene {
         };
         let mut solver = ImplicitSolver::new(state, params);
         solver.set_colliders(self.colliders.iter().map(|c| c.to_core()).collect());
+        // A static object is a body proxy: closed, outward-wound, and the one geometry
+        // whose contact gap can carry a sign. Without this the mesh collider uses the
+        // unsigned point-triangle distance and a garment authored even micrometres inside
+        // the body falls straight through it.
+        solver.set_static_collider_verts(&static_obj);
         solver
     }
 

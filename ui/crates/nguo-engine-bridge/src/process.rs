@@ -99,6 +99,17 @@ impl ProcessTransport {
 
 impl Transport for ProcessTransport {
     fn solve(&self, sub: &Submission, sink: &mut dyn FrameSink) -> Result<Summary, BridgeError> {
+        // Refused, not ignored. `mguso run` eats an `engine_api::Scene`, which
+        // has no stitch field, so the seams would silently never close and the
+        // garment would fall off the body as loose panels — a wrong answer
+        // delivered as a successful one.
+        if !sub.stitches.is_empty() {
+            return Err(BridgeError::Unsupported(format!(
+                "the scene carries {} seam stitches and `engine_api::Scene` has no stitch field, \
+                 so `mguso run` cannot sew — submit through `InProcessTransport` instead",
+                sub.stitches.len(),
+            )));
+        }
         let scratch = tempfile::Builder::new().prefix("nguo-drape-").tempdir()?;
         let scene_path = scratch.path().join("scene.json");
         std::fs::write(&scene_path, serde_json::to_vec_pretty(&sub.scene)?)?;

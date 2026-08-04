@@ -1,12 +1,69 @@
 <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
 # CI.md — what the gates are, and which of them have actually run
 
-Written 2026-08-01, status updated 2026-08-02. **CI has still never executed.**
-A git repository now exists at the tree root, but it has **0 commits and 0
-tracked files**, so nothing has been pushed and no workflow has ever been
-dispatched. Everything below is either *verified locally* (command run on this
-Mac, output pasted into the session report) or *never executed* (needs a
-runner). Each item says which.
+Written 2026-08-01. **Status rewritten 2026-08-04: CI has executed, and `main`
+is RED.**
+
+Every earlier version of this file said CI had never run. It has. The repository
+has **2 commits, both pushed** — `5077aef` (2026-08-02) and `7ce7827`
+(2026-08-03, the avatar bundle) — and three workflows have run on each.
+Verified with `gh run list --branch main` and `gh run view`:
+
+| Push | `CI` | `Licenses` | `Cross-platform` (advisory) |
+|---|---|---|---|
+| `5077aef` — initial | **success** | **success** | success |
+| `7ce7827` — avatar bundle | **FAILURE** | **FAILURE** | success |
+
+**What failed on `main`, and how each was fixed at the root. Both fixes are in
+the working tree and NOT yet committed** — the maintainer commits.
+
+1. **`CI → cargo test (both workspaces)`.** That job checks out with
+   `lfs: false`, so `assets/avatars/**/*.glb` arrive as ~130-byte LFS **pointer
+   text**. Pointer files are not *missing*, so the bundle-gated tests did not
+   skip — they failed inside the glTF reader. Four `engine-api` tests panicked
+   at `avatar_bundle.rs:168`
+   (`cloth_dropped_on_a_real_proxy_does_not_sink_into_the_body`,
+   `collision_mesh_matches_the_manifest_col_tier`,
+   `full_proxy_lowers_into_a_static_collider_scene`,
+   `real_proxy_scene_is_deterministic`). Every other job in that run passed,
+   **including the dedicated `avatars` job with `lfs: true`** (13m34s, green) —
+   so the LFS design works and the job that declined to opt into it is the one
+   that broke.
+
+   Latent behind it, and never reached because `make test` does `core-engine`
+   first: **three more failures in `ui`** — `nguo-avatar`'s
+   `collision_meshes_load_through_engine_io_as_finite_human_sized_bodies`,
+   `declared_but_absent_files_are_pinned_and_reported_absent` and
+   `every_shared_skin_map_is_on_disk`. Reproduced locally 2026-08-04 against a
+   pointer fixture. Fixing only the four named `engine-api` tests would have
+   turned one red job into the same red job.
+
+   **Fixed at the one place all consumers share.** `engine_io::is_lfs_pointer`
+   (`core-engine/crates/engine-io/src/lib.rs`) reads the first 42 bytes and
+   matches the pointer magic. `engine_io::load_mesh` refuses a pointer before
+   format dispatch, so *every* mesh format now says "run `git lfs pull`"
+   instead of emitting a parse error about its own grammar. On top of that
+   predicate, both bundle gates treat a pointer as an **absent** asset:
+   `nguo_avatar::Bundle::open` returns the new `AvatarError::LfsPointer`, and
+   `engine-api`'s `collision_tiers()` takes its loud-skip path.
+   `MGUSO_REQUIRE_AVATAR_BUNDLE=1` still converts both skips into hard
+   failures, so the `avatars` job keeps covering for real.
+
+   **This was the cheap fix of the two, and it is only honest while the
+   `avatars` job is watched.** The alternative — `lfs: true` on the `test` job —
+   costs 227 MB per push against a **1 GiB/month free-plan allowance** (§8b),
+   about four runs, and loses the "degrades gracefully with no bundle" coverage
+   the design deliberately keeps. Taking the cheap fix means **no blocking job
+   covers the avatar path** until `avatars` is promoted. Promote it (§12.2).
+
+2. **`Licenses → attribution-check`** (`Makefile:189`): the generated
+   `LICENSES/THIRD_PARTY.md` was stale — and would have stayed stale forever.
+   Not a forgotten regeneration. See §8 for the root cause (CRLF vs
+   `.gitattributes`), which is why it passed on the author's machine and failed
+   on every runner.
+
+Below, each item still says whether it was *verified locally* or *observed on a
+runner*; "never executed" now means only the specific paths noted.
 
 ---
 
@@ -49,7 +106,7 @@ Prerequisites beyond the Rust toolchain: `jq` (adapter assertions) and
 |---|---|---|
 | `ci.yml` → `lint` | macos-15 | **Required** |
 | `ci.yml` → `test` | macos-15 | **Required** |
-| `ci.yml` → `avatars` | macos-15 | Advisory — **reports NOT RUN today**, see §8b |
+| `ci.yml` → `avatars` | macos-15 | Advisory — **ran and PASSED** on `7ce7827` (13m34s); promote it to blocking, see §8b |
 | `ci.yml` → `gpu` | macos-15 | **Required** |
 | `ci.yml` → `build` | macos-15 | **Required** |
 | `ci.yml` → `perf` | macos-15 | Advisory (`continue-on-error`) |
@@ -120,29 +177,39 @@ tick go green.
 
 ## 5. Test baseline
 
-The session brief recorded **338 pass / 4 test targets failing** in
-`core-engine` (`engine-api --test regression`; `engine-io` collada/gltf/usda).
-Re-measured here at 20:25 on 2026-08-01:
+**Re-measured 2026-08-04** with `cargo test --workspace --no-fail-fast` in each
+workspace, on this machine, in debug:
 
-```
-$ make test WORKSPACES=core-engine
-...
-16 test targets, all ok
-TOTAL passed=376 failed=0            exit 0
-```
+| Workspace | Result |
+|---|---|
+| `core-engine` | **399 passed, 0 failed, 3 ignored** — exit 0 |
+| `ui` | **542 passed, 2 failed, 3 ignored** — exit 101 |
 
-The four previously-failing targets — `regression.rs`, `collada_file.rs`,
-`gltf_file.rs`, `usda_file.rs` — all ran and all passed. Another agent fixed
-them mid-session. **`core-engine` is green as of that timestamp**; treat any
-later red as a new regression, and re-measure rather than trusting this
-paragraph, because several agents are editing concurrently.
+The two `ui` failures are `nguo-cli/tests/cli_end_to_end.rs:141,183`. They need
+the `mguso` binary and **hard-fail rather than skip** when
+`core-engine/target/release/mguso` is absent. On a runner that is not a problem —
+the `test` job builds both workspaces — but on a clean laptop `cargo test` in
+`ui/` is red until you run `cargo build -p engine-cli` in `core-engine/` or set
+`$NGUO_MGUSO`. That is the "no vacuous passes" rule biting its own author, and
+it is the right trade.
 
-`--no-fail-fast` is set so one broken target never masks the others. The
-`test` job is required and is *not* softened in any way: if the suite is red,
-CI is red. A stale internal claim of "340 tests green" was
-stale for a different reason — it was never re-run.
+**Re-measured again 2026-08-04, after the LFS-pointer fix, with `mguso` built:
+`ui` is 544 passed, 0 failed, 3 ignored.** Same suite, same machine — the "2
+failed" above is precisely those two `nguo-cli` tests finding the binary this
+time. If you see 542/2, build `mguso`; nothing is broken.
 
-The `ui` workspace is also green: **361 passed, 0 failed** (re-measured 2026-08-02).
+**This baseline is debug.** `cargo test -p engine-core --release` currently
+fails `tet.rs:1045 analytic_gradient_is_much_faster_than_fd` (4.6× measured
+against a 5× threshold, 3/3 on an idle machine) — pre-existing and tracked, but
+it means "the suite is green" is only true of the debug profile.
+
+**Do not trust this paragraph over a run.** Its previous version recorded
+376/361 and was two sessions out of date, and three different `core-engine`
+counts were in circulation across the docs at once. Re-measure.
+
+`--no-fail-fast` is set so one broken target never masks the others. The `test`
+job is required and is *not* softened in any way: if the suite is red, CI is
+red.
 
 ---
 
@@ -202,11 +269,58 @@ it blocks the GPLv3 upgrade path our GPL-2.0-or-later tree relies on.
 This is the **enforcement** half. `core-engine/about.toml` + `about.hbs`
 (cargo-about → `LICENSES/THIRD_PARTY.md`) are the **attribution** half and
 already existed; the two allow-lists are deliberately kept in sync. Change one,
-change the other. There is no CI job for cargo-about yet — attribution
-regeneration is still manual.
+change the other.
+
+**There IS a CI check for cargo-about, and it was the thing failing.**
+`licenses.yml` runs `make attribution-check` (`Makefile:189`), which regenerates
+each `LICENSES/THIRD_PARTY.md` and diffs it against the committed copy. On
+`7ce7827` it reported **STALE** and the workflow exited 2. Regeneration itself
+is still manual (`make attribution`); the check only tells you that you forgot.
+
+**But nobody had forgotten. The root cause was line endings, and it made the
+check unsatisfiable.** Reproduced 2026-08-04 by exporting `HEAD` with
+`git archive` and running the same target: 208 lines of Apache-2.0 text differ
+in `core-engine/LICENSES/THIRD_PARTY.md`, contributed by **`approx 0.5.1`,
+whose `LICENSE` ships CRLF** (202 CRs, `file` says "with CRLF line
+terminators"). `cargo-about` embeds each licence verbatim, so the generated
+file carries those CRLFs. `.gitattributes` puts `*.md` on `text eol=lf`, so
+**git rewrites them to LF on commit**. From that moment the committed bytes can
+never equal the generator's output again, on any machine, forever.
+
+That is also why it passed locally and failed on every runner: the author ran
+`make attribution` and then `make attribution-check` against the *working tree*,
+where the un-normalised CRLF was still on disk and the two matched. Git's
+normalisation happens between working tree and index — a boundary nothing in
+the pre-push path crossed. **A generated file drifted from its source because
+the check and the runner were reading different bytes.**
+
+**Fix:** `ABOUT_GEN` (`Makefile:39`) now pipes the generated file through
+`tr -d '\r'`, so generated bytes == committed bytes on every OS, including a
+Windows contributor's. Verified: after regeneration both files have 0 CRs and
+`git hash-object --no-filters` equals `git hash-object --path` for each — i.e.
+what is on disk is exactly what git will store.
+
+**The clinching evidence that this was line endings and nothing else:** after
+regeneration, `core-engine/LICENSES/THIRD_PARTY.md` diffs to **zero lines**
+against the copy committed in `7ce7827`. The committed attribution was never
+content-stale; it was only ever CRLF-stale. (`ui`'s does change, by 105 lines —
+`spade`, `robust`, `allocator-api2` and the two new workspace members
+`nguo-sewing` / `nguo-triangulate`. That part is ordinary, correct drift.)
+And it is **not** dependabot: `glam` is 0.30.10 in both lockfiles on `main`;
+0.33.2 exists only on an unmerged branch.
+
+**Where to hook the check pre-push.** With the fix in place a plain local run
+is now trustworthy, and it is cheap — `make attribution-check` measured
+**25.4 s wall** for both workspaces on this machine (`/usr/bin/time -p`,
+Apple M4, warm cargo registry), no network, no build. Put it in
+`.git/hooks/pre-push` (not
+pre-commit: too slow to pay on every commit, and attribution only matters at the
+point of publishing). Until such a hook exists, run `make licenses` before any
+push that touched a `Cargo.toml`, a `Cargo.lock`, an `about.toml`/`about.hbs`,
+or added a workspace crate — those are the only inputs that can move it.
 
 **Verified locally** with `cargo-deny 0.20.2`: `bans ok, licenses ok,
-sources ok` for both workspaces.
+sources ok` for both workspaces — the `deny` half is not what is red.
 
 ---
 
@@ -225,14 +339,39 @@ bundle, `make test` is green while covering none of the avatar path.
 
 1. **`actions/checkout` does not fetch LFS objects.** It needs `lfs: true`.
    Without it the tree gets ~130-byte pointer **text** files where the GLBs
-   should be. Those are not *missing*, so the tests would not skip — they would
-   fail inside the glTF reader as `AvatarError::MeshLoad`. That is the right
-   failure, but it is a failure, not coverage.
-2. **`assets/avatars/` is not tracked in git yet.** Verified 2026-08-03:
-   `git ls-files assets | wc -l` → **0**, and `git lfs ls-files` → empty. The
-   directory exists on disk and is not gitignored; it has simply never been
-   added. **So `lfs: true` has nothing to fetch and there is no avatar coverage
-   in CI today.**
+   should be. ~~Those are not *missing*, so the tests would not skip — they
+   would fail inside the glTF reader as `AvatarError::MeshLoad`. That is the
+   right failure, but it is a failure, not coverage.~~ **Superseded
+   2026-08-04.** That was the design and it was wrong: "the right failure" in a
+   *required* job is just a red build. A pointer is now recognised as such
+   (`engine_io::is_lfs_pointer`) and counts as an **absent** asset, so the gates
+   skip. `MGUSO_REQUIRE_AVATAR_BUNDLE=1` still makes it a hard failure, which is
+   where the "loud and typed" property actually belongs — in the `avatars` job,
+   the one that opted into LFS and therefore has no excuse for a pointer.
+2. ~~**`assets/avatars/` is not tracked in git yet.**~~ **It was committed in
+   `7ce7827` and pushed on 2026-08-03.** `git ls-files assets` → **70**,
+   `git lfs ls-files` → **36** (re-verified 2026-08-04). So `lfs: true` now has
+   something to fetch, the `avatars` job really ran, and **prediction (1) above
+   came true the same day**: the `test` job, which does *not* set `lfs: true`,
+   went red with four glTF-reader failures instead of skips — plus three more in
+   `ui` that nobody saw, because `make test` runs `core-engine` first and stops.
+   Fixed; see the status block at the top of this file.
+
+**LFS bandwidth, since the `avatars` job spends it on every push.** The
+`SeedeXR` org is on the **free plan** (`gh api /orgs/SeedeXR` → `plan.name:
+"free"`, checked 2026-08-04), and the repo is public. GitHub's free LFS
+allowance is 1 GiB storage and **1 GiB/month bandwidth**, billed to the
+repository owner; a public repo gets no exemption. At 227 MB per `lfs: true`
+checkout that is **~4 runs of the `avatars` job per month** before the quota is
+gone — and dependabot alone opens enough PRs to reach it. Whether a data pack
+has been bought could **not** be confirmed: the billing endpoints need the
+`admin:org` scope this token does not have
+(`/orgs/SeedeXR/settings/billing/shared-storage` → 410 "moved", the replacement
+→ 403 needs `admin:org`). **The maintainer must check this directly** at
+Settings → Billing → Git LFS Data. If there is no data pack, the honest options
+are to run `avatars` on a schedule or on `assets/avatars/**` path changes rather
+than every push, or to buy a pack. Adding `lfs: true` to a second job doubles
+the burn.
 
 **The design.**
 
@@ -241,8 +380,8 @@ bundle, `make test` is green while covering none of the avatar path.
 | Where | `ci.yml` → `avatars`, macos-15 |
 | Checkout | `lfs: true` — **the only LFS checkout in this repo's CI** |
 | Gate | `make test-avatars`, which sets `MGUSO_REQUIRE_AVATAR_BUNDLE=1` and **fails** rather than skips when the bundle is absent |
-| When the bundle is untracked | writes a **`⚠ AVATAR COVERAGE: NOT RUN`** block to `$GITHUB_STEP_SUMMARY` and does not run the suites |
-| Blocking | **No.** Advisory until the bundle is committed — a required check that passes vacuously is worse than no check |
+| When the bundle is untracked | writes a **`⚠ AVATAR COVERAGE: NOT RUN`** block to `$GITHUB_STEP_SUMMARY` and does not run the suites — **no longer reachable on `main`; the bundle is tracked** |
+| Blocking | **Not yet, and it should be now.** It was advisory only because the bundle was untracked and a required check that passes vacuously is worse than no check. That condition is gone: the job ran green on a real runner in 13m34s |
 
 **Why not `lfs: true` on every job:** five jobs × 227 MB per push, against a
 metered LFS bandwidth allowance, to make four more jobs' worth of tests skip.
@@ -254,10 +393,11 @@ degrades gracefully with no bundle" continuously exercised instead of asserted.
 size before the suites run, and never fails. So a bundle-less run says so at the
 top of its log instead of hiding it among ~800 test lines.
 
-**To promote `avatars` to blocking**, once `assets/avatars/` is committed:
-delete the `Bundle presence` step and the `if:` on the last step in the
-`avatars` job — `make test-avatars` already fails on a missing bundle — then add
-`avatars` to the branch-protection required-checks list.
+**To promote `avatars` to blocking — the precondition is met, do it:** delete
+the `Bundle presence` step and the `if:` on the last step in the `avatars` job
+(`make test-avatars` already fails on a missing bundle), then add `avatars` to
+the branch-protection required-checks list. Until that happens the only
+*blocking* job that touches the bundle is `test`, which touches it wrongly.
 
 **Verified locally 2026-08-03:** `make avatar-bundle` on both paths (`PRESENT
 … 70 files, 232796 KB`, and `ABSENT` with `NGUO_AVATAR_BUNDLE=/nope`);
@@ -269,29 +409,57 @@ write and the `steps.bundle.outputs` condition have no runner behind them yet.
 
 ---
 
-## 9. Perf: measured, not gated
+## 9. Perf: compared against a baseline, still advisory
 
-The project's frame-time budgets — 8.3 ms target (120 fps), 16.6 ms hard
-ceiling (60 fps), measured on canonical scenes — are meant to be enforced in
-CI. **That gate is not implemented, and the
-`perf` job does not pretend otherwise.**
+`make profile` → `tools/profile.sh` collects every benchmark that already
+exists in the crates and prints one table against `tools/perf-baseline.tsv`,
+which records each number, the hardware it was taken on, and the tolerance
+beyond which `--check` calls it a regression.
 
-What exists today: `mguso bench <scene> --steps 200`, which reports
-`ms_per_step` / `steps_per_sec` for the solver. The `perf` job runs it, writes
-the JSON to the run summary and uploads it as an artifact, and is
-`continue-on-error: true`. No threshold is asserted.
+There are still no `benches/` directories — deliberately. The measurements are
+`#[ignore]`d **tests**, so `make test` never pays for them and they cannot rot:
 
-Why not: §17's budgets are *UI frame times*, and there is no UI, no canonical
-50-piece project, and no stored baseline to regress against. A threshold
-invented now would be a number pulled from the air, and shared runners are too
-noisy for a naive ms comparison anyway. There are no `benches/` directories in
-either workspace (checked) — `mguso bench` is the only real measurement in the
-repo.
+| tier | measurement | metric |
+|---|---|---|
+| `quick` | `mguso bench <scene> --steps 200` | `solver_ms_per_step` |
+| `quick` | `nguo-registry` `tests/overhead.rs` | `registry_ns_per_op` |
+| `gpu` | `nguo-gpu` `tests/handoff_bench.rs` | `handoff_blocking_ms_100k`, `handoff_pipelined_ms_100k` |
+| `avatar` | `engine-api` `tests/avatar_bundle.rs::collision_proxy_step_cost` | `proxy_step_s_selfcol_off`, `proxy_step_s_selfcol_on` |
 
-To turn it into a gate: store a baseline (committed JSON or a
-`benchmark-action` gh-pages series), compare with a tolerance wide enough for
-runner noise (±30% is realistic on hosted runners), and drop
-`continue-on-error`.
+`tools/profile.sh --selftest` checks the output parsers against a fixture and
+runs no benchmark. It exists because the first version of one parser matched
+nothing and the table simply said `SKIP` — silent zero coverage.
+
+**The `perf` job stays `continue-on-error: true`, and that is a measured
+decision, not caution.** On bare-metal Apple M4, *identical binaries* gave:
+`mguso bench` 20.53 → 28.48 ms/step (1.39x); `nguo-registry` start+done
+65.4 → 131.7 ns/op (2.01x) — and in one run the strictly-more-work variant came
+out *faster*; blocking handoff at 100k verts 2.885 → 3.871 ms (1.34x); the full
+collision proxy with self-collision 0.247 → 0.928 s/step (3.76x, because that
+benchmark times a single step with no averaging). The "±30% on hosted runners"
+figure this section used to quote is off by a factor of two on bare metal. So
+the tolerances are 2x–4x and catch **structural** regressions only: pipelining
+lost, a device sync added, self-collision switched back on. A `REGRESSED` row in
+the job summary means "a human should look", never "this PR is broken".
+
+CI does not run the `avatar` tier: it needs the 227 MB bundle and `checkout`
+does not fetch LFS without `lfs: true`, which the `perf` job does not set. (The
+bundle **is** tracked as of `7ce7827` — only the `avatars` job opts into LFS.)
+The job passes `--only quick,gpu` and the two proxy rows are absent rather than
+falsely green.
+
+**Frame time is not measured here, and the reason must travel with every
+frame-time number in this project.** `nguo-app` forces
+`ICED_PRESENT_MODE=fifo` (`src/main.rs:1239`), so on the 120 Hz dev display
+**8.33 ms is a hard floor** — the frame thread blocks on vblank. The
+8.35–8.74 ms figures prove the 120 fps cadence is *kept*; they are not GPU
+headroom, and a GPU 4x too slow would still read 8.33 ms until it began
+dropping frames (then 16.6 ms). Where the budget *can* be enforced it is:
+`handoff_bench.rs`'s `verdict()` scores every transfer against 8.3/16.6 ms.
+
+To make it a real gate: run `tools/profile.sh --check` on a self-hosted machine
+with `BASELINE=` pointing at a baseline measured **on that machine**, then drop
+`continue-on-error`. Do not tighten the hosted-runner numbers instead.
 
 ---
 
@@ -323,69 +491,93 @@ The Makefile is written for portability across the three: `SHA256` picks
 
 ---
 
-## 11. Verified locally vs never executed
+## 11. What has actually run on a runner
 
-**Verified — command run on this machine, output in the session report:**
+**Rewritten 2026-08-04.** This section used to be "verified locally vs never
+executed", because nothing had been pushed. Three workflows have now run on
+`main` twice each (the status block at the top of this file), so most of it is settled by observation rather than by
+argument. `gh run view` is the authority; the session-1 local-verification list
+is kept below it because it still records *how* each gate was proven to fail as
+well as pass.
 
-- `actionlint 1.7.12` on all three workflows → exit 0 (this also shellchecks
-  every `run:` block)
-- `python3 -c "import yaml; yaml.safe_load(...)"` on all three workflows and
-  `dependabot.yml` → all parse
-- `make help`, `make check-wgpu` (both workspaces, single major 27.0.1)
-- `make fmt` — ran on both workspaces. Caught two *real* in-flight problems
-  minutes apart: first a formatting diff in
-  `core-engine/crates/engine-api/src/auto_drape.rs`, then (after that was
-  fixed) `cargo metadata` failing in `ui` because `ui/crates/nguo-app/`
-  exists as a directory with no `Cargo.toml` yet. Both are other agents
-  mid-edit; both are the gate doing its job, not CI defects.
+**Observed on a runner (`gh run list --branch main`, `gh run view`):**
+
+| Job | On `5077aef` | On `7ce7827` | Note |
+|---|---|---|---|
+| `lint` (fmt + clippy + wgpu pin) | ✅ | ✅ 3m32s | |
+| `test` (both workspaces) | ✅ | ❌ 11m30s | LFS pointer files — see the status block at the top |
+| `gpu` (Metal smoke + 10× determinism) | ✅ | ✅ 2m31s | **§4's argument is now observation: Metal works on a hosted macos-15 runner** |
+| `avatars` (`lfs: true`) | n/a | ✅ 13m34s | the bundle only existed from `7ce7827` |
+| `build` (release binaries) | ✅ | ✅ 4m37s | |
+| `perf` (measure only) | ✅ | ✅ 2m16s | |
+| `licenses.yml` | ✅ | ❌ 40s | `attribution-check` — see the status block at the top |
+| `cross-platform` linux + windows | ✅ | ✅ 8m25s | advisory; lavapipe and DX12 both survive |
+
+So: **Metal on a hosted runner, LFS checkout, `$GITHUB_STEP_SUMMARY`,
+`Swatinem/rust-cache`, `taiki-e/install-action`, lavapipe, DX12 and the whole
+Makefile-driven design are no longer unverified.** Dependabot is live too — six
+remote branches, and its PRs currently fail `CI` and `Licenses` for the same two
+reasons `main` does. Note for the triage: the dependabot bumps in flight
+(`glam 0.30.10 → 0.33.2`) are **not** why `attribution-check` fails. The stale
+block is Apache-2.0 text from `approx 0.5.1`, and the cause is line endings, not
+a version change — §8.
+
+**One deprecation warning on every job, unaddressed:** `actions/checkout@v4`
+targets Node 20, which GitHub is forcing onto Node 24. Not yet an error. Note
+that a dependabot PR bumping `actions/checkout` from 4 to 7 is open and its CI
+is red — for the `main` reasons, not for the bump.
+
+**Still never executed:** `act` (not installed, and it runs Linux containers so
+it could not do the macOS jobs anyway); a self-hosted perf runner, which is what
+§9 needs before `perf` can stop being advisory.
+
+**Kept from session 1 — locally verified, and valuable because each gate was
+seen to *fail* as well as pass:**
+
+- `actionlint 1.7.12` on all three workflows → exit 0 (it also shellchecks every
+  `run:` block); `yaml.safe_load` on all three plus `dependabot.yml`.
 - `make clippy WORKSPACES=core-engine` — first run **failed**
-  (`needless_range_loop`, `crates/engine-gpu/src/lib.rs:397`), re-run after
-  another agent's fix **passed**. Both outcomes observed, so the
-  `-D warnings` gate demonstrably fails and passes correctly.
-- `make test WORKSPACES=core-engine` → exit 0, 356 passed / 0 failed (§5)
+  (`needless_range_loop`, `crates/engine-gpu/src/lib.rs:397`), passed after the
+  fix. Both outcomes observed, so `-D warnings` demonstrably works.
 - `make gpu-smoke EXPECT_BACKEND=Metal` → `adapter=Apple M4 backend=Metal
-  device_type=IntegratedGpu`; also verified it **fails** with
-  `EXPECT_BACKEND=Vulkan`
-- `make determinism` → 10/10 byte-identical, and the mismatch branch verified
-  to exit non-zero
-- `make bench` → `ms_per_step` JSON on the canonical scene
-- `make licenses` (cargo-deny 0.20.2) → `bans ok, licenses ok, sources ok`
-  for **both** workspaces on the first run. A later re-run failed on `ui` with
-  the same transient `nguo-app` missing-manifest error as `make fmt` — same
-  cause, another agent mid-edit, not a config problem.
-
-**Never executed — needs a runner:**
-
-- Every job as a *job*: checkout, `Swatinem/rust-cache@v2`,
-  `actions/upload-artifact@v4`, `taiki-e/install-action@v2`, the
-  `$GITHUB_STEP_SUMMARY` write, concurrency cancellation. Action *references*
-  are validated by actionlint; their *runtime behaviour* is not.
-- Anything Metal on a hosted macOS runner. See §4: strongly evidenced, not
-  observed.
-- Every Linux and Windows step. No Linux or Windows machine was available.
-  In particular: whether lavapipe survives the implicit/GPU determinism gate,
-  whether `choco install make` + Git Bash runs this Makefile unmodified, and
-  whether WARP is fast enough not to time out.
-- `make clippy` / `make test` on the **`ui`** workspace. `ui/crates/*` is being
-  written right now by other agents, `ui/` has no `target/` directory, and a
-  cold iced+Vello+wgpu build is several GB on a disk with ~24 GiB free.
-- `act` (`which act` → not found; not installed). It could not have run the
-  macOS jobs anyway — `act` executes Linux containers.
+  device_type=IntegratedGpu`; verified it **fails** with `EXPECT_BACKEND=Vulkan`.
+- `make determinism` → 10/10 byte-identical, mismatch branch verified to exit
+  non-zero.
+- `make licenses` (cargo-deny 0.20.2) → `bans ok, licenses ok, sources ok`, both
+  workspaces.
+- `make fmt` caught two real in-flight problems minutes apart — a formatting
+  diff and a workspace member with no `Cargo.toml`. The gate doing its job.
 
 ---
 
-## 12. What the maintainer must do to make any of this real
+## 12. What the maintainer must do next
 
-1. **`git init`** at `/nguo-3d` (the repo root, *above* `core-engine/` and
-   `ui/`) — the workflows assume a single repo containing both workspaces.
-   `.github/`, `Makefile` and `deny.toml` are already at that root.
-2. A root `.gitignore` already exists (`target/`, `.determinism-tmp/`,
-   `bench.json`, `.DS_Store`); `core-engine/.gitignore` stays as it is.
-3. Commit and push to a GitHub remote, on a branch — **not** `main` directly.
-4. Open a PR. That is the first real execution of any of this. Expect the
-   `test` job red (§5) and, until the in-flight edits land, `lint` red too.
-5. Once green, set branch protection required checks:
-   `lint`, `test`, `gpu`, `build`, `cargo-deny`. Leave `perf`, `linux` and
-   `windows` out until §2's milestones.
-6. If the `gpu` job cannot get a Metal adapter, add a self-hosted
-   Apple-Silicon runner. Do not delete the assertion.
+Steps 1–4 of the old version (git init, .gitignore, first push, first PR) are
+**done**. What is left:
+
+1. **Commit the two fixes and confirm `main` goes green.** Both failures in the
+   status block at the top are fixed in the working tree, reproduced and
+   re-verified locally, but **nothing is committed** — that is the maintainer's
+   call. Neither was a workflow-design problem: one was a presence gate that
+   could not tell a git-LFS pointer from a file, the other was CRLF versus
+   `.gitattributes`.
+2. **Promote `avatars` to a blocking check. This is now urgent, not tidy.**
+   Fix (1) makes the `test` job *skip* the avatar suites instead of failing on
+   them, so with `avatars` still advisory **no blocking job covers the avatar
+   path at all**. Its precondition — a committed bundle — is met and it passed
+   on a real runner. Delete the `Bundle presence` step and the `if:` on the
+   job's last step, then add it to branch protection.
+2b. **Check the Git LFS bandwidth bill before doing (2).** The org is on the
+   free plan: 1 GiB/month, ~4 runs of `avatars`. See §8b. If there is no data
+   pack, make `avatars` run on a schedule or on `assets/avatars/**` changes
+   rather than on every push — a required check that runs out of quota mid-month
+   blocks every PR.
+3. **Set branch protection required checks** if they are not set:
+   `lint`, `test`, `gpu`, `build`, `avatars`, `cargo-deny`. Leave `perf`,
+   `linux` and `windows` advisory until §2's milestones.
+4. **Triage the open dependabot PRs.** They are red for `main`'s reasons, not
+   their own, so they cannot be assessed until step 1 lands.
+5. **Bump `actions/checkout`** off Node 20 before GitHub turns the warning into
+   an error (a dependabot PR already proposes v7).
+6. If the `gpu` job ever cannot get a Metal adapter, add a self-hosted
+   Apple-Silicon runner. Do not delete the assertion — it works today.

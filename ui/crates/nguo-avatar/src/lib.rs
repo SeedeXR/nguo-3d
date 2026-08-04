@@ -85,6 +85,16 @@ pub enum AvatarError {
     #[error("avatar bundle not found at {0} — set NGUO_AVATAR_BUNDLE to its location")]
     BundleNotFound(PathBuf),
 
+    /// The bundle's directory tree is there but its LFS assets are not: every
+    /// `.glb`/`.vrm`/`.png` is ~130 bytes of pointer text. Callers must treat
+    /// this exactly like [`AvatarError::BundleNotFound`] — the bundle is not
+    /// usable, and nothing but fetching the objects will change that.
+    #[error(
+        "avatar bundle at {root} is not hydrated — {file} is a git-LFS pointer, not the \
+         asset. Run `git lfs pull` (in CI, check out with `lfs: true`)"
+    )]
+    LfsPointer { root: PathBuf, file: PathBuf },
+
     #[error("avatar bundle at {root} is missing {file}")]
     MissingFile { root: PathBuf, file: String },
 
@@ -142,9 +152,11 @@ pub enum AvatarError {
 /// An opened avatar bundle: manifest and skin library parsed once, plus the
 /// root to resolve files against.
 ///
-/// Opening reads two JSON files and touches no mesh, texture or GLB — asset
+/// Opening reads two JSON files and no mesh, texture or GLB content — asset
 /// paths are resolved on demand, because most of the paths the manifest
-/// declares are not in the bundle.
+/// declares are not in the bundle. It does read the first 42 bytes of each
+/// declared asset that exists, to reject a bundle whose git-LFS objects were
+/// never fetched (see [`AvatarError::LfsPointer`]).
 #[derive(Debug, Clone)]
 pub struct Bundle {
     root: PathBuf,
@@ -178,6 +190,21 @@ impl Bundle {
             });
         }
         let skin: SkinLibrary = read_json(&root, &manifest.skin.detail)?;
+        // The two JSON inputs above are normal git; every mesh and texture is
+        // git-LFS. So a checkout without LFS gets this far happily and then hands
+        // out paths to ~130-byte pointer stubs — files that EXIST, so `has_asset`
+        // says yes and the bundle looks present while none of its geometry is.
+        // Fail here, once, rather than at each consumer's parse.
+        // ponytail: LFS hydration is all-or-nothing per checkout, so the first
+        // declared asset that is a pointer settles it — no need to stat textures too.
+        if let Some(file) = manifest
+            .avatars
+            .values()
+            .flat_map(|a| Asset::ALL.map(|k| root.join(a.declared(k))))
+            .find(|p: &PathBuf| engine_io::is_lfs_pointer(p))
+        {
+            return Err(AvatarError::LfsPointer { root, file });
+        }
         tracing::info!(
             version = %manifest.version,
             avatars = manifest.avatars.len(),

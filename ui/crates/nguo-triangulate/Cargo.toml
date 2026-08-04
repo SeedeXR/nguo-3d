@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-triangulate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Pattern piece -> simulation mesh: constrained Delaunay, refinement, and the pattern <-> mesh vertex map."
+
+[dependencies]
+nguo-pattern = { workspace = true }
+kurbo = { workspace = true }
+serde = { workspace = true }
+spade = "2.15"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"
+serde_json = { workspace = true }

@@ -7,6 +7,7 @@ pub mod auto_drape;
 pub mod avatar;
 pub mod material;
 pub mod params;
+pub mod resize;
 pub mod rig;
 pub mod scene;
 
@@ -16,5 +17,6 @@ pub use avatar::{
 };
 pub use material::{FabricPreset, Material};
 pub use params::{Barrier, Model, SolverConfig};
+pub use resize::{apply_resize, plan_resize, BodyGirth, ResizeCheck, ResizePlan};
 pub use rig::{AnimationChannel, AnimationClip, AnimationPath, Joint, Skin};
 pub use scene::{ColliderSpec, Object, Scene};

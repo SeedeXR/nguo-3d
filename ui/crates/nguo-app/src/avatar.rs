@@ -66,10 +66,31 @@ pub fn fit_zoom(stature_m: f64) -> f64 {
     CANVAS_FIT_PX / (stature_m.max(0.1) * MM_PER_M)
 }
 
+/// The body as the **solver** sees it: the COL tier, positions and triangles
+/// only, no normals and no material.
+///
+/// A separate tier from the one the viewport draws, deliberately. COL is 15 000
+/// triangles against LOD2's 50 000, and the solver's cost is dominated by
+/// walking the static geometry (`memory/DECISIONS.md` D-17), while the renderer's
+/// is not — so they want different meshes and always will.
+#[derive(Debug, PartialEq)]
+pub struct CollisionProxy {
+    pub positions: Vec<[f32; 3]>,
+    pub tris: Vec<[u32; 3]>,
+    /// Material-space UVs. Synthesised if the GLB carries none — see
+    /// [`Avatars::collider`].
+    pub uvs: Vec<[f32; 2]>,
+    /// Which avatar this is, so a stale proxy cannot be handed to a solve.
+    pub avatar: String,
+}
+
 /// The opened bundle plus the current selection.
 #[derive(Debug)]
 pub struct Avatars {
     bundle: Bundle,
+    /// The collision proxy for [`Self::selected`], loaded on first use. Dropped
+    /// on [`Self::select`], because it belongs to the body that was showing.
+    proxy: Option<Arc<CollisionProxy>>,
     /// Manifest key of the shown body. Always resolvable: only [`Self::select`]
     /// writes it, and only after the key has resolved.
     selected: String,
@@ -117,8 +138,180 @@ impl Avatars {
             base_color,
             mesh,
             silhouette,
+            proxy: None,
             bundle,
         })
+    }
+
+    /// The COL-tier collision proxy for the shown body, loaded on first use and
+    /// cached until the body changes.
+    ///
+    /// Lazy because it costs 6–10 ms and a session that never drapes never needs
+    /// it, and cached because a drape is re-submitted on every arrangement nudge.
+    pub fn collider(&mut self) -> Result<Arc<CollisionProxy>, AvatarError> {
+        if let Some(proxy) = &self.proxy {
+            return Ok(Arc::clone(proxy));
+        }
+        let started = std::time::Instant::now();
+        let obj = {
+            let avatar = self.selected();
+            self.bundle
+                .load_mesh(avatar, nguo_avatar::Asset::GlbCollision)?
+        };
+
+        // `engine_api::Scene::lower` keeps UVs only if EVERY object supplies
+        // them, so a body with none would silently switch the *garment's*
+        // anisotropic warp/weft membrane off. A planar XZ fallback is
+        // non-degenerate (a zero-area UV triangle divides by zero when the
+        // membrane element is built) and the body never moves, so its material
+        // frame is irrelevant — only its being present is not.
+        let synthesised = obj.uvs.len() != obj.positions.len();
+        let uvs = if synthesised {
+            obj.positions.iter().map(|p| [p[0], p[2]]).collect()
+        } else {
+            obj.uvs.clone()
+        };
+
+        tracing::info!(
+            target: "nguo_app",
+            avatar = %self.selected,
+            vertices = obj.positions.len(),
+            triangles = obj.tris.len(),
+            uvs_synthesised = synthesised,
+            ms = started.elapsed().as_secs_f64() * 1000.0,
+            "collision proxy loaded"
+        );
+        let proxy = Arc::new(CollisionProxy {
+            positions: obj.positions,
+            tris: obj.tris,
+            uvs,
+            avatar: self.selected.clone(),
+        });
+        self.proxy = Some(Arc::clone(&proxy));
+        Ok(proxy)
+    }
+
+    /// Where the garment starts: hung at the body landmark the *document* asked
+    /// for, on a cylinder measured off this body's own collision proxy.
+    ///
+    /// # Why not `girth / 2π`
+    ///
+    /// That is what `nguo_sewing::ArrangeOptions::body_radius_m` documents, and it
+    /// is **wrong for a real torso** — measured, not argued. A chest is an ellipse,
+    /// not a circle: the female sculpt's 1 116.0 mm chest girth gives
+    /// `girth / 2π = 177.6 mm`, while its actual half-width at that height is
+    /// larger and its half-depth (154 mm from the proxy bounds) smaller. A tube of
+    /// radius 177.6 mm therefore starts **inside** the body at the sides — the one
+    /// initial condition a barrier method cannot recover from, and exactly what
+    /// `arrange.rs`'s own module docs warn about.
+    ///
+    /// So the radius is the real circumscribing one: the largest horizontal
+    /// distance from the vertical axis over every proxy vertex the garment passes.
+    ///
+    /// # Which landmark, and why the garment says so rather than this function
+    ///
+    /// `hang.landmark` is the manifest key the *document* named
+    /// (`nguo_doc::Feature::Support`), so a waistband lands at the measured waist
+    /// and a hip-sized tube at the measured hip. That is the whole of automatic
+    /// placement for a designed garment: the pattern was drafted to a girth, and
+    /// the girth is measured at a height, so the height is not a guess.
+    ///
+    /// Nothing here scales anything. A garment whose supporting girth does not
+    /// match the landmark's is placed anyway and the seams take up the
+    /// difference — resizing a drafted pattern to a body is **grading**, which
+    /// re-evaluates the parameter table, and it is not this function's business
+    /// (see `Feature::Support`).
+    ///
+    /// [`nguo_avatar::Landmark::Underbust`] is only the fallback, for a document
+    /// with no annotation at all. It is a *safe* fallback for the reason below.
+    ///
+    /// # Why the fallback is the **underbust** and not the chest
+    ///
+    /// Because of where the arms are, measured off the proxy (`profile.rs`'s
+    /// `arrangement_geometry`, female body, 0.1 m bands):
+    ///
+    /// ```text
+    ///   y 0.9-1.0  max_r 0.2018      hip
+    ///   y 1.0-1.1  max_r 0.1845
+    ///   y 1.1-1.2  max_r 0.1624      waist  (1.2087 measured)
+    ///   y 1.2-1.3  max_r 0.1424      underbust (1.2476 measured)
+    ///   y 1.3-1.4  max_r 0.1797
+    ///   y 1.4-1.5  max_r 0.9293  <-- the T-pose ARMS
+    ///   y 1.5-1.6  max_r 0.7953  <-- still arms
+    ///   y 1.6-1.7  max_r 0.2066      neck/shoulders again
+    /// ```
+    ///
+    /// So `Landmark::UpperChest`, whose own documentation says "just below the
+    /// armpit", is at **1.4877 m** — squarely inside the arm band. Scanning a
+    /// radius up to there returns 0.9293 m, the arm span, and the arranger then
+    /// places the garment a metre off the body. That is not a hypothetical: it is
+    /// what this function did before the profile above was run.
+    ///
+    /// Hanging an unannotated garment from the underbust (1.2476 m female,
+    /// 1.1986 m male) puts the **whole** band below the arms, so a plain radial
+    /// maximum is the torso — no arm-detection heuristic and no magic x-extent
+    /// threshold.
+    ///
+    /// # The band, not everything underneath
+    ///
+    /// The radius is scanned over `[top − hang.drop_mm, top]`: the band the
+    /// garment can actually reach. Scanning everything below the top edge instead
+    /// measured the **feet** — 0.2281 m in the female proxy's y 0.0–0.1 band,
+    /// against 0.2033 m for the widest band a hip-length garment spans — so every
+    /// garment started on a cylinder sized by an ankle.
+    ///
+    /// Falls back to `nguo_sewing`'s defaults if the proxy will not load, so a
+    /// missing bundle is a looser arrangement rather than a failure.
+    pub fn arrange_options(&mut self, hang: &nguo_sewing::Hang) -> nguo_sewing::ArrangeOptions {
+        let default = nguo_sewing::ArrangeOptions::default();
+        let landmark = hang
+            .landmark
+            .as_deref()
+            .and_then(nguo_avatar::Landmark::from_key)
+            .unwrap_or(nguo_avatar::Landmark::Underbust);
+        let measurements = self.bundle.measurements(self.selected());
+        let Some(band) = measurements.girth(landmark) else {
+            return default;
+        };
+        // Metres for a body query, off `Length`'s millimetres — not a second
+        // conversion of any garment coordinate (D-18): the garment's own mm → m
+        // happens once, in `Placement3d::apply`.
+        let top_y_m = (band.height.mm() / MM_PER_M) as f32;
+        let low_y_m = top_y_m - (hang.drop_mm / MM_PER_M) as f32;
+        tracing::info!(
+            target: "nguo_app",
+            avatar = %self.selected,
+            landmark = landmark.key(),
+            annotated = hang.landmark.is_some(),
+            top_y_m,
+            low_y_m,
+            girth_m = band.circumference.mm() / MM_PER_M,
+            "garment placed at a measured landmark"
+        );
+
+        let Ok(proxy) = self.collider() else {
+            return nguo_sewing::ArrangeOptions { top_y_m, ..default };
+        };
+        // The widest the body gets anywhere the garment covers. A loose start is
+        // the safe one — the seams pull it in, whereas geometry that starts
+        // inside the body is what a barrier method cannot recover from
+        // (`nguo_sewing::arrange` module docs) — so this is a max over the band
+        // and not an average.
+        let radius = proxy
+            .positions
+            .iter()
+            .filter(|p| p[1] <= top_y_m && p[1] >= low_y_m)
+            .map(|p| (p[0] * p[0] + p[2] * p[2]).sqrt())
+            .fold(0.0f32, f32::max);
+
+        nguo_sewing::ArrangeOptions {
+            // A floor, so a proxy that failed to describe a body — or a garment
+            // with no vertical extent at all — cannot collapse the start cylinder
+            // onto the axis.
+            body_radius_m: radius.max(default.body_radius_m),
+            top_y_m,
+            ..default
+        }
     }
 
     /// The catalogue as `(manifest key, avatar)` — two bodies, `female` then
@@ -189,6 +382,9 @@ impl Avatars {
 
         self.silhouette = silhouette(&mesh, SILHOUETTE_BANDS);
         self.mesh = mesh;
+        // Dropped, not reloaded: it belongs to the body that was showing, and
+        // the next drape is what decides whether a new one is needed at all.
+        self.proxy = None;
         self.selected = key.to_owned();
         tracing::info!(
             target: "nguo_app",
@@ -649,6 +845,112 @@ mod bundle_tests {
         }
         factors.dedup();
         assert_eq!(factors.len(), EXPECTED_TONES, "two tones share a factor");
+    }
+
+    /// **The C-workstream regression test.** A garment designed in the app must
+    /// land at the landmark it was drafted for, on either body, to within the
+    /// tolerance stated here — and the annotation, not the arranger's default, is
+    /// what puts it there.
+    ///
+    /// Tolerance: **1 mm**. It is that tight because nothing is interpolated —
+    /// `top_y_m` is the manifest's own `height_m` for the annotated landmark, and
+    /// the wrap puts the piece's `y = 0` edge exactly there
+    /// (`arrange::tests::pattern_y_is_down_so_the_hem_ends_up_below_the_top_edge`).
+    /// Anything looser would let a wrong landmark through: the male body's waist
+    /// and hip are 242 mm apart.
+    #[test]
+    fn a_designed_garment_lands_at_the_landmark_it_was_drafted_for() {
+        let Some(mut avatars) = bundle() else { return };
+        let doc = nguo_sewing::sample::bodice_block();
+        let hang = nguo_sewing::hang(&doc);
+        let landmark = nguo_avatar::Landmark::from_key(
+            hang.landmark.as_deref().expect("the sample is annotated"),
+        )
+        .expect("...with a landmark the bundle measures");
+
+        for key in ["female", "male"] {
+            avatars.select(key).expect("a catalogue key");
+            let measured = avatars
+                .bundle
+                .measurements(avatars.selected())
+                .girth(landmark)
+                .expect("the manifest measures it");
+            let opts = avatars.arrange_options(&hang);
+            let intended = (measured.height.mm() / MM_PER_M) as f32;
+            assert!(
+                (opts.top_y_m - intended).abs() < 1e-3,
+                "{key}: hung at {:.4} m, {} is at {intended:.4} m",
+                opts.top_y_m,
+                landmark.key(),
+            );
+
+            // ...and the whole garment, through the real sew path, not just the
+            // option: the top edge is at the landmark and the hem is below it.
+            let garment = nguo_sewing::build(
+                &doc,
+                &nguo_sewing::SewOptions {
+                    arrange: opts,
+                    ..Default::default()
+                },
+            )
+            .expect("the sample sews");
+            let b = garment.bounds().expect("geometry");
+            assert!(
+                (b.max[1] - intended).abs() < 1e-3,
+                "{key}: the garment's top edge is at {:.4} m, not {intended:.4} m",
+                b.max[1],
+            );
+            let drop = (hang.drop_mm / MM_PER_M) as f32;
+            assert!((b.max[1] - b.min[1] - drop).abs() < 1e-3, "{b:?}");
+
+            // The start cylinder clears the band and no more. Both bounds matter:
+            // inside the body is unrecoverable for a barrier method, and a start
+            // sized off the *feet* — which is what scanning everything below the
+            // top edge measured — is 0.2281 m against the 0.2110 m this band
+            // actually needs on the female body.
+            let (lo, hi) = (intended - drop, intended);
+            let band = avatars
+                .collider()
+                .expect("COL tier")
+                .positions
+                .iter()
+                .filter(|p| p[1] >= lo && p[1] <= hi)
+                .map(|p| (p[0] * p[0] + p[2] * p[2]).sqrt())
+                .fold(0.0f32, f32::max);
+            assert!(
+                (opts.body_radius_m - band).abs() < 1e-6,
+                "{key}: radius {:.4} m against the band's {band:.4} m",
+                opts.body_radius_m,
+            );
+            let whole = avatars
+                .collider()
+                .expect("COL tier")
+                .positions
+                .iter()
+                .filter(|p| p[1] <= hi)
+                .map(|p| (p[0] * p[0] + p[2] * p[2]).sqrt())
+                .fold(0.0f32, f32::max);
+            assert!(
+                band < whole,
+                "{key}: the band ({band:.4} m) is not tighter than everything \
+                 below the top edge ({whole:.4} m) — is this test still measuring \
+                 anything?",
+            );
+
+            // An unannotated document must NOT land here: the fallback is a
+            // different landmark, so the annotation is load-bearing rather than a
+            // decoration that happens to agree.
+            let fallback = avatars.arrange_options(&nguo_sewing::Hang {
+                landmark: None,
+                drop_mm: hang.drop_mm,
+            });
+            assert!(
+                (fallback.top_y_m - opts.top_y_m).abs() > 0.2,
+                "{key}: annotated {:.4} m vs fallback {:.4} m",
+                opts.top_y_m,
+                fallback.top_y_m,
+            );
+        }
     }
 
     /// The startup state has to agree with the shipped meshes: they are baked

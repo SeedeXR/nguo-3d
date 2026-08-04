@@ -21,6 +21,11 @@ nguo-avatar = { workspace = true }
 nguo-canvas = { workspace = true }
 nguo-viewport3d = { workspace = true }
 nguo-doc = { workspace = true }
+nguo-sewing = { workspace = true }
+# `drape::sew_options` picks the target triangle edge per tier — the single
+# biggest input to the solve cost (see the measured table in `drape.rs`).
+nguo-triangulate = { workspace = true }
+nguo-engine-bridge = { workspace = true }
 nguo-keymap = { workspace = true }
 nguo-registry = { workspace = true }
 nguo-splash = { workspace = true }
@@ -35,6 +40,14 @@ vello = { workspace = true }
 glam = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# The drape worker's runtime. `nguo-engine-bridge` requires being inside one to
+# spawn its worker, and the shell is the process that owns it — the bridge cannot
+# make a runtime it does not own outlive its own constructor.
+tokio = { version = "1", features = ["rt-multi-thread"] }
+# The scene handed to the bridge is `engine_api::Scene` JSON. Typing it here would
+# mean an `engine-api` dependency in the shell for one struct the bridge already
+# deserialises (`nguo_engine_bridge::Submission::scene`).
+serde_json = { workspace = true }
 
 [dev-dependencies]
 wgpu = { workspace = true }

@@ -65,7 +65,8 @@ cd ../core-engine && cargo run -p engine-cli -- gpu-info    # confirm a real GPU
 
 ## 3. The crate map
 
-20 crates in `ui/crates`. What each one owns:
+**22 crates** in `ui/crates` (`ls ui/crates | wc -l`, 2026-08-04). What each one
+owns:
 
 **Document and model** — no GPU, no UI framework, fast tests.
 
@@ -77,13 +78,15 @@ cd ../core-engine && cargo run -p engine-cli -- gpu-info    # confirm a real GPU
 | `nguo-measure` | Units, length parse/format, and the numeric-field expression evaluator (`waist/4 + 1cm`). |
 | `nguo-constraints` | The 2D geometric constraint solver — safe Rust over FreeCAD's `planegcs`. |
 | `nguo-avatar` | The avatar bundle as typed data: the two-body catalogue, the four geometry tiers, path resolution, mesh loading, the skin library (Monk tone → linear `baseColorFactor`), and the bundle's measured girths converted to mm. It does **not** measure meshes — see [`AVATARS.md`](AVATARS.md) §6. |
+| `nguo-triangulate` | Pattern → sim mesh. Curve flattening, snap-round sanitising, constrained Delaunay, refinement, **the mm → m conversion**, and the pattern ↔ mesh map (`pattern_mm`, `sources`, `chains`). One entry point, one resolution knob (§4.5). |
+| `nguo-sewing` | Seam topology, segment correspondence, 3D arrangement, and the assembly that becomes a drape: `validate` → `triangulate` → `arrange` → `correspond` → `Garment`. Knows nothing about the solver — a `Stitch6` is six indices and six weights. |
 
 **Rendering and GPU.**
 
 | Crate | Owns |
 |---|---|
 | `nguo-gpu` | The only crate that knows iced's wgpu renderer, Vello and `egui-wgpu` at once. Device adoption, the frame graph, the engine→UI handoff, frame stats. |
-| `nguo-canvas` | The 2D pattern canvas: a Vello scene with pan/zoom and pointer hit-testing. |
+| `nguo-canvas` | The 2D pattern canvas: a Vello scene with pan/zoom, a derived grid, a Bézier pen, snapping, hit-testing through a spatial index, and a per-piece scene cache. **Fully tested and not yet wired to the mouse** — the shell calls `frame` and nothing else. |
 | `nguo-viewport3d` | The 3D drape viewport as an iced custom primitive, plus the turntable camera. |
 
 **Shell and interaction.**
@@ -101,15 +104,26 @@ cd ../core-engine && cargo run -p engine-cli -- gpu-info    # confirm a real GPU
 
 | Crate | Owns |
 |---|---|
-| `nguo-engine-bridge` | Async bridge from the app to the `mguso` solver: submission, transport, frame sink. |
+| `nguo-engine-bridge` | Async bridge from the app to the solver: submission, epoch cancellation, frame sink, and **two transports** — `process.rs` (the `mguso` child, used by the CLI) and `inproc.rs` (in-process, used by the app, so a preview needs no built binary). |
 | `nguo-cli` | `nguo`, the headless driver. `ops::SPECS` + `ops::dispatch` are the operation surface. |
 | `nguo-mcp` | An MCP server whose tool list is *generated* from `nguo_cli::ops::SPECS` and which calls the same `dispatch`. One implementation, two front doors. |
 | `nguo-bridge-dcc` | Headless Blender / Unity interop: executable discovery, argv construction, output parsing, axis conversion. |
 | `nguo-registry` | Feature inventory (what the app can do) and the live process registry (what it is doing right now). Backs the status bar. |
 
-`ui/Cargo.toml`'s `[workspace.dependencies]` also names `nguo-sewing` and
-`nguo-triangulate`. Those crates do not exist yet; `members = ["crates/*"]`
-means only what is on disk is built.
+### The one path that crosses most of them: sew → drape
+
+`nguo-app/src/drape.rs` is worth reading before touching any of the above. It is
+the only place the whole chain is visible at once, and its module comment
+carries the measurements that justify every choice in it (tier resolution, body
+clipping, why nothing is pinned, why `"self-collision"` is mandatory and
+kebab-case).
+
+```text
+nguo_doc::Document  →  nguo_sewing::build  →  Garment  →  drape.rs::scene()
+                       (validate · triangulate · arrange · correspond)
+                                                       ↓
+    nguo_viewport3d  ←  Drape::poll on the vsync tick  ←  InProcessTransport
+```
 
 ---
 
@@ -190,12 +204,21 @@ The UI and the document are **millimetres, always**.
 format — a user typing inches or centimetres changes the display, never the
 storage. `Metadata::display_unit` is a presentation setting.
 
-The engine works in **metres** (its gravity is `-9.8`, not `-9800`). The
-conversion belongs at the bridge boundary in `nguo-engine-bridge` and nowhere
-else, so that exactly one function can be wrong about it. **This conversion is
-not implemented yet** — the bridge currently passes scene JSON through to
-`mguso` untouched. Do not add a second mm↔m conversion anywhere upstream of it;
-add the one at the boundary.
+The engine works in **metres** (its gravity is `-9.8`, not `-9800`). **Landed
+2026-08-04, and not where this section originally said it would go:** the
+conversion lives in **`nguo-triangulate`**, as `MM_TO_M`
+(`crates/nguo-triangulate/src/lib.rs:59`). The bridge was the wrong home because
+the boundary is not one call site — the arranger, the stitch builder and the
+viewport all read the same mesh, so converting "at the boundary" would have
+meant converting three times. Instead `SimMesh` carries **both**:
+`positions` in metres, `pattern_mm` in millimetres, and `SimMesh::check()` pins
+the ratio exactly, so drift is a test failure rather than a garment 1 000× too
+big.
+
+One qualification, stated because it is a second site: `nguo_sewing::arrange`
+applies `1e-3` itself to coordinates it places directly, and
+`arrange::tests::wrapping_a_panel_preserves_its_width_as_arc_length` is what
+keeps the two in agreement. Do not add a **third**.
 
 **The avatar is the exception that proves the rule.** `assets/avatars/` is
 authored in **metres**, i.e. already solver units, so the body → collision
@@ -222,6 +245,24 @@ rather than aspirational.
 
 ## 5. Tests
 
+**Where the suite stands, 2026-08-04, re-run rather than recalled:**
+`ui` **542 pass / 2 fail / 3 ignored**, `core-engine` **399 pass / 0 fail /
+3 ignored** (both `cargo test --workspace --no-fail-fast`, debug).
+
+The two failures are `nguo-cli/tests/cli_end_to_end.rs:141,183`, which need the
+`mguso` binary and **hard-fail rather than skip** when it is missing. Build it —
+`cargo build -p engine-cli` in `core-engine/`, or point `$NGUO_MGUSO` at one —
+and they pass. That is the standard working as intended: a test that quietly
+passes by doing nothing is worse than one that fails loudly. If you gate a test
+here, write the skip notice to **fd 2** (libtest swallows `eprintln!` under
+capture), give it a require-env escape hatch, and assert a floor so it cannot
+pass vacuously.
+
+One caveat on that baseline: it is a **debug** run.
+`cargo test -p engine-core --release` currently fails one timing test
+(`tet.rs:1045`, 4.6× measured against a 5× threshold) — a pre-existing,
+tracked issue, not a regression.
+
 Four tiers, all run by plain `cargo test`. There is no separate runner.
 
 1. **Unit** — in-crate `#[cfg(test)]` modules. The bulk of the suite. Pure
@@ -246,13 +287,36 @@ cargo test -p nguo-gpu --release --test handoff_bench -- --ignored --nocapture
 cargo test -p nguo-bridge-dcc --test dcc_installed -- --ignored
 ```
 
+**Benchmarks are `#[ignore]`d tests too, and there is one script that runs all
+of them.** `make profile` (`tools/profile.sh`) collects every performance number
+this repo measures and prints it against `tools/perf-baseline.tsv`;
+`make profile-check` fails on a regression past that row's tolerance. It adds no
+benchmark of its own, so nothing rots. Read the baseline file before quoting any
+number from it — it records the hardware, the load at measurement time and why
+each tolerance is as wide as it is. [`CI.md`](CI.md) §9.
+
 A third kind of gating: **the avatar suites are bundle-gated.** With no
 `assets/avatars/` — 227 MB behind git-LFS — they print a skip notice on stderr
-and **pass**, which is right for a laptop and wrong for a gate. 13 tests are
-behind that gate: 8 in `nguo-avatar/tests/bundle.rs` and 5 (1 `#[ignore]`
-benchmark) in `core-engine`'s `engine-api/tests/avatar_bundle.rs`. Each one that
-runs asserts a **floor** — the tier vertex/triangle counts, all 10 tones, all 7
-shared skin maps — so it cannot pass vacuously with the bundle present.
+and **pass**, which is right for a laptop and wrong for a gate.
+
+**A clone without `git lfs pull` counts as "no bundle" too.** The directory is
+tracked, so it is there, but every mesh and texture is ~130 bytes of pointer
+text. `engine_io::is_lfs_pointer` recognises that and the gates skip with a
+notice that says `git lfs pull`, instead of the glTF parse error this used to
+produce (which is exactly how CI went red on `7ce7827`).
+
+**25 tests are behind that gate**, counted 2026-08-04 rather than recalled:
+8 in `nguo-avatar/tests/bundle.rs`, 11 in `nguo-app`'s `avatar.rs`, and 6
+(1 `#[ignore]` benchmark) in `core-engine`'s `engine-api/tests/avatar_bundle.rs`.
+Older figures of 13, 15 and 20 are all in circulation in this repo's docs and
+comments; none of them is right. Each test that runs asserts a **floor** — the
+tier vertex/triangle counts, all 10 tones, all 7 shared skin maps — so it cannot
+pass vacuously with the bundle present.
+
+`$NGUO_AVATAR_BUNDLE` relocates the bundle for **all three** suites (the
+`engine-api` one honoured it only from 2026-08-04; before that it hardcoded a
+crate-relative path and silently ignored the variable `make test-avatars` was
+already exporting).
 
 ```sh
 make test-avatars                                    # THE GATE: a skip is a FAILURE

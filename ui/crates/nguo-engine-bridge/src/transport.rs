@@ -32,9 +32,34 @@ impl Tier {
 /// `mguso run scene.json` eats). It is carried as [`serde_json::Value`]
 /// rather than a typed struct because typing it would mean depending on
 /// `engine-api`, which is on the wrong wgpu major today (crate docs).
+/// One seam stitch, as the *authoring* side knows it: two weighted barycentric
+/// points on the lowered scene's concatenated vertex space, sewn together.
+///
+/// Deliberately only the two things the app can know. `stiffness`, the rest
+/// length `l0` and the saturation cap `l_cap` are functions of the fabric's
+/// contact gap, so the transport derives them from the scene material rather
+/// than making the caller guess (`engine_core::implicit::Stitch`,
+/// `engine-cli/src/gauge_driver.rs:1157-1186`).
+///
+/// `index[0..3]`/`weight[0..3]` is one side, `[3..6]` the other; each half's
+/// weights must sum to 1. A single-vertex side is `{v,v,v}` / `{1,0,0}`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Stitch {
+    pub index: [u32; 6],
+    pub weight: [f32; 6],
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Submission {
     pub scene: serde_json::Value,
+    /// Seams to close. Empty for an unsewn drape (a single sheet under gravity).
+    ///
+    /// **Not part of `scene`**: `engine_api::Scene` has no stitch field at all
+    /// (`engine-api/src/scene.rs:71-78`), so stitches cannot travel in the JSON
+    /// and [`ProcessTransport`] cannot carry them.
+    ///
+    /// [`ProcessTransport`]: crate::ProcessTransport
+    pub stitches: Vec<Stitch>,
     pub tier: Tier,
     /// Frames to simulate. `None` = whatever the scene's `config.frames` says.
     pub frames: Option<u32>,
@@ -83,6 +108,14 @@ pub enum BridgeError {
     },
     #[error("engine binary not usable: {0}")]
     Binary(String),
+    /// The scene is not something this transport can solve, and no amount of
+    /// retrying will change that. Names the transport that could.
+    #[error("this transport cannot solve the submission: {0}")]
+    Unsupported(String),
+    /// The solver produced a non-finite position — it diverged. Reported rather
+    /// than streamed, so the last good frame stays on screen.
+    #[error("the solver diverged at frame {frame} (vertex {vertex} is not finite)")]
+    Diverged { frame: u32, vertex: usize },
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("could not parse engine output as JSON: {0}")]

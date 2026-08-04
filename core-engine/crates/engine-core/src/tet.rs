@@ -1014,7 +1014,26 @@ mod tests {
     }
 
     /// The analytic gradient must be dramatically cheaper than the FD path — that is
-    /// the point of deriving it. One SVD vs 24 energy evaluations.
+    /// the point of deriving it. One SVD vs the 24 energy evaluations in
+    /// [`tet_gradient_fd`].
+    ///
+    /// **This used to time `tet_element_assembly` and call it "fd".** It is not: the
+    /// assembly returns `(energy, tet_gradient_analytic, tet_hessian_analytic)` — every
+    /// term analytic, no finite differences anywhere — so the test was measuring how much
+    /// an SVD plus a 9x12 and a 12x12 matmul costs over a gradient, a ratio with no 5x
+    /// significance at all. In debug that ratio is ~16x and the assertion passed; under
+    /// `--release` the Hessian's flat scalar loops optimise far better than the gradient's
+    /// SVD does, the ratio falls to 3.4-5.0x, and `cargo test --release` was RED. Measured,
+    /// three consecutive rounds of 2000 iterations each, Apple M4:
+    ///
+    /// | ratio vs the analytic gradient | debug | release |
+    /// |---|---|---|
+    /// | `tet_gradient_fd` (what this test claims to measure) | 21.1-23.1x | **18.8-19.0x** |
+    /// | `tet_element_assembly` (what it did measure) | 16.0-16.5x | **3.4-5.0x** |
+    ///
+    /// So the ratio never regressed and the threshold was never wrong — the operand was.
+    /// Against the real FD path 5x keeps ~3.8x of headroom in the tighter configuration,
+    /// which is why it stays at 5x rather than being tuned to the measurement.
     #[test]
     fn analytic_gradient_is_much_faster_than_fd() {
         let rest = vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z];
@@ -1034,19 +1053,15 @@ mod tests {
         let t_analytic = t0.elapsed();
         let t1 = std::time::Instant::now();
         for _ in 0..iters {
-            let (_e, g, _h) = tet_element_assembly(&p, &el, 100.0, 200.0);
-            acc += g[1];
+            acc += tet_gradient_fd(&p, &el, 100.0, 200.0)[1];
         }
         let t_fd = t1.elapsed();
         assert!(acc.is_finite());
-        // The FD path also builds the 12×12 Hessian (~300 energy evals), so the
-        // margin is large; require a conservative 5× to keep the test robust on any
-        // machine while still failing loudly if the analytic path regresses.
         assert!(
             t_fd.as_secs_f64() > 5.0 * t_analytic.as_secs_f64(),
             "analytic gradient not meaningfully faster: analytic {t_analytic:?} vs fd {t_fd:?}"
         );
-        eprintln!("analytic {t_analytic:?} vs fd(+hessian) {t_fd:?}");
+        eprintln!("analytic {t_analytic:?} vs fd {t_fd:?}");
     }
 
     /// Verify the face table's winding NUMERICALLY rather than trusting it: each

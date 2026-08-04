@@ -11,8 +11,11 @@
 //!
 //! # Gating
 //!
-//! The bundle is not committed, so these tests **skip** when
-//! `assets/avatars/data/manifest.json` is absent — loudly, on stderr. Set
+//! The bundle is committed (`7ce7827`) but its meshes are **git-LFS**, so a plain
+//! `git clone` or an `actions/checkout` without `lfs: true` still has no usable
+//! bundle. These tests **skip** in both cases — no `data/manifest.json`, *or* a
+//! collision proxy that is a git-LFS pointer stub rather than a GLB — loudly, on
+//! stderr. `$NGUO_AVATAR_BUNDLE` relocates the root. Set
 //! `MGUSO_REQUIRE_AVATAR_BUNDLE=1` (CI, or any machine that has the bundle) to turn
 //! the skip into a failure, so a silently vanished asset cannot quietly disable the
 //! whole file. Every test that does run asserts a **floor** on what it loaded and on
@@ -25,22 +28,34 @@
 //! # Why the stepped tests simulate only the crown
 //!
 //! Measured by [`collision_proxy_step_cost`] below (Apple Silicon, `--release`,
-//! dt = 1/120, one 36-vertex patch on the body):
+//! dt = 1/120, one 36-vertex patch on the body). D-17 — the static mesh collider —
+//! has since landed in `engine_core::broadphase`, so BOTH columns are given:
 //!
-//! | body in the scene | tris | self-collision | s/step |
-//! |---|---|---|---|
-//! | whole proxy, male | 15 050 | on | **9.41** |
-//! | whole proxy, female | 15 050 | on | **12.53** |
-//! | whole proxy, either | 15 050 | off | 0.068 |
-//! | crown region crop | 235 | on | 0.048 |
+//! | body in the scene | tris | self-collision | before D-17 | after D-17 |
+//! |---|---|---|---|---|
+//! | whole proxy, male | 15 050 | on | **9.724** | **0.235** |
+//! | whole proxy, female | 15 050 | on | **15.951** | **0.245** |
+//! | whole proxy, male | 15 050 | off | 0.068 | 0.068 |
+//! | whole proxy, female | 15 050 | off | 0.154 | 0.069 |
+//! | crown region crop | 306–333 | on | 0.065–0.087 | 0.022–0.026 |
 //!
-//! The 138–184× is the body's own 15 000 triangles going through the cloth
-//! self-collision broad phase as if they could collide with each other. See the
-//! module docs of `engine_api::avatar` for why decimation does not fix that and a
-//! solver-side static collider does. The full proxy is still loaded and its whole
-//! scene still built and lowered, in
-//! [`full_proxy_lowers_into_a_static_collider_scene`]; only the *stepping* is scoped,
-//! via the same `avatar_collider_near` a garment tool would use.
+//! After-column figures are the median of three consecutive runs on an otherwise idle
+//! machine; a single run under load reads up to 2.4x higher on BOTH columns, which is
+//! why the guard below asserts the on/off RATIO and not an absolute.
+//!
+//! The old 143× was the body's own 15 000 triangles going through the cloth
+//! self-collision broad phase as if they could collide with each other. The fix is a
+//! movability filter on the candidate pairs (`engine_core::broadphase::any_movable`):
+//! a pair whose every participant is immovable is inert, so it is never emitted.
+//! What remains is ~4× the self-collision-off cost and it is honest work — every
+//! query still SCANS the static geometry to find what is near the cloth, because the
+//! grid is rebuilt per call rather than cached across steps.
+//!
+//! The stepped tests still simulate only the crown: it is ~12× cheaper again, and
+//! keeping CI cost down is worth more than re-covering the same solver path. The full
+//! proxy is loaded, built and lowered in
+//! [`full_proxy_lowers_into_a_static_collider_scene`] and now also STEPPED, with the
+//! regression guard, in [`collision_proxy_step_cost`].
 
 use engine_api::avatar::{
     avatar_collider, avatar_collider_near, drape_on_avatar, GarmentPlacement,
@@ -50,27 +65,39 @@ use engine_core::linsolve::CgCpu;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-/// The bundle root: `assets/avatars/`, holding `data/manifest.json`.
-fn bundle_root() -> Option<PathBuf> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../assets/avatars");
-    if root.join("data/manifest.json").is_file() {
-        return Some(root);
-    }
-    let msg = format!(
-        "avatar bundle not present at {} (no data/manifest.json) — the avatar collider \
-         layer is NOT covered by this run",
-        root.display()
-    );
+/// Loud skip. `None` so a test can `else { return; }`, but a hard failure when
+/// `MGUSO_REQUIRE_AVATAR_BUNDLE` says this run must really cover the avatar path.
+///
+/// Written to fd 2 directly, not via `eprintln!`: libtest's output capture only
+/// intercepts the print macros, so a macro'd skip notice is swallowed unless the
+/// test fails or `--nocapture` is passed — i.e. not loud at all.
+fn skip<T>(msg: String) -> Option<T> {
     assert!(
         std::env::var_os("MGUSO_REQUIRE_AVATAR_BUNDLE").is_none(),
         "MGUSO_REQUIRE_AVATAR_BUNDLE is set but {msg}"
     );
-    // Written to fd 2 directly, not via `eprintln!`: libtest's output capture only
-    // intercepts the print macros, so a macro'd skip notice is swallowed unless the
-    // test fails or `--nocapture` is passed — i.e. not loud at all.
     use std::io::Write;
     let _ = writeln!(std::io::stderr(), "SKIP: {msg}");
     None
+}
+
+/// The bundle root: `$NGUO_AVATAR_BUNDLE`, else `assets/avatars/`, holding
+/// `data/manifest.json`. Same override `nguo_avatar::default_root` and
+/// `make test-avatars` use, so one variable relocates the bundle for every
+/// consumer.
+fn bundle_root() -> Option<PathBuf> {
+    let root = match std::env::var_os("NGUO_AVATAR_BUNDLE") {
+        Some(p) => PathBuf::from(p),
+        None => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../assets/avatars"),
+    };
+    if root.join("data/manifest.json").is_file() {
+        return Some(root);
+    }
+    skip(format!(
+        "avatar bundle not present at {} (no data/manifest.json) — the avatar collider \
+         layer is NOT covered by this run",
+        root.display()
+    ))
 }
 
 /// One avatar's collision tier, exactly as the bundle declares it. The counts and
@@ -153,6 +180,19 @@ fn collision_tiers() -> Option<Vec<Col>> {
         "expected two avatars (male, female), got {:?}",
         out.iter().map(|c| &c.sex).collect::<Vec<_>>()
     );
+    // The GLBs are git-LFS; the manifest is not. A checkout without LFS therefore
+    // parses the manifest fine and leaves ~130 bytes of pointer text where each
+    // proxy should be. That file EXISTS, so the presence gate above is satisfied
+    // and the tests used to fail inside the glTF reader instead of skipping — the
+    // exact way `main` went red on 7ce7827. A pointer is an absent bundle.
+    if let Some(stub) = out.iter().find(|c| engine_io::is_lfs_pointer(&c.path)) {
+        return skip(format!(
+            "{} is a git-LFS pointer, not the collision proxy — this checkout has no \
+             avatar bundle hydrated. Run `git lfs pull` (in CI, check out with \
+             `lfs: true`). The avatar collider layer is NOT covered by this run",
+            stub.path.display()
+        ));
+    }
     Some(out)
 }
 
@@ -539,7 +579,7 @@ fn collision_proxy_step_cost() {
     let Some(cols) = collision_tiers() else {
         return;
     };
-    let time = |label: &str, scene: &Scene, steps: usize| {
+    let time = |label: &str, scene: &Scene, steps: usize| -> f64 {
         let mut solver = scene.build_implicit();
         solver.params.contact_kappa = CONTACT_KAPPA;
         solver.params.contact_dhat = CONTACT_DHAT;
@@ -553,6 +593,7 @@ fn collision_proxy_step_cost() {
             solver.state.vertex_count(),
             scene.objects.iter().map(|o| o.tris.len()).sum::<usize>(),
         );
+        per
     };
     for col in &cols {
         let body = load(col);
@@ -570,15 +611,133 @@ fn collision_proxy_step_cost() {
         full.config.iterations = 3;
         let mut off = full.clone();
         off.config.self_collision = false;
-        time(
+        let off_cost = time(
             &format!("{} full proxy, self-collision off", col.sex),
             &off,
             3,
         );
-        time(
+        // 3 steps, not 1. This was the named upgrade path in `tools/perf-baseline.tsv` for
+        // `proxy_step_s_selfcol_on`: timing exactly one step gave the row NO averaging, which
+        // is why it carried a 3.67x observed spread and a tolerance of 4.0 — a tolerance that
+        // cannot distinguish a real regression from a busy machine. Averaged over 3 (matching
+        // the OFF row) the spread measured 1.004x over five runs, so the tolerance came down
+        // to 2.0. Cost of the change: ~0.5 s.
+        let on_cost = time(
             &format!("{} full proxy, self-collision on", col.sex),
             &full,
-            1,
+            3,
+        );
+
+        // ---- REGRESSION GUARD (D-17) ----
+        //
+        // The static mesh collider's whole claim is that a body mesh costs roughly what it
+        // costs with self-collision switched off, because cloth-vs-body contact no longer
+        // runs the body's own 15 000 triangles against each other.
+        //
+        // The guard is a RATIO against the self-collision-off run measured on the same
+        // machine in the same process, not an absolute s/step: absolutes are hardware and
+        // are the one thing guaranteed to make this flaky. It is set an order of magnitude
+        // loose. Measured on Apple Silicon at the time of writing the ratio is ~3.5x
+        // (male 0.235 / 0.068, female 0.245 / 0.069) against a pre-fix ratio of **143x**
+        // (9.724 / 0.068), so 40x catches the regression that matters — the reintroduction
+        // of body-vs-body pairs — while leaving 10x of headroom for a slow or noisy box.
+        // Verified to bite: reverting the filter makes this fail at 171x.
+        let ratio = on_cost / off_cost;
+        assert!(
+            ratio < 40.0,
+            "{} full proxy costs {ratio:.1}x the self-collision-off run \
+             ({on_cost:.3} vs {off_cost:.3} s/step). D-17 regressed: the body's own \
+             triangles are being tested against each other again.",
+            col.sex
+        );
+        // Floor, so the guard cannot pass by measuring nothing: the off run must have done
+        // real work, and self-collision must cost SOMETHING (if `on` were free, the contact
+        // pass would have been switched off rather than made cheap).
+        assert!(
+            off_cost > 1.0e-4 && ratio > 1.0,
+            "{} degenerate measurement: on {on_cost:.4} off {off_cost:.4} s/step",
+            col.sex
+        );
+    }
+}
+
+/// **The precondition of the signed mesh contact** (`engine_core::contact::
+/// signed_point_tri_distance_grad`): a body proxy's triangles must be wound so their
+/// geometric normals point OUT of the body. That winding is what tells the contact barrier
+/// which side is inside, and it is the difference between a garment that recovers from a
+/// 10 µm initial overlap and one that silently falls through the body. It was an
+/// assumption until this test; the shipped bundle is the thing that has to satisfy it.
+///
+/// Two independent oracles, neither of them the solver:
+///
+/// 1. **Signed volume** (divergence theorem, `V = ⅙ Σ (a×b)·c`). Positive ⇒ outward
+///    winding. Nothing in the loader or the crop can fake it — it is a property of the
+///    authored index buffer — and comparing it to the bounding box also proves the proxy is
+///    closed enough to have a volume at all. An inverted proxy gives a negative number.
+/// 2. **The authored glTF NORMAL attribute**, which the exporter writes outward for
+///    rendering and which the solver never reads.
+///
+/// Oracle 2 is asserted as a FRACTION, not as zero, because it is not zero: measured on the
+/// shipped bundle, **7 of the female proxy's 15 000 triangles** disagree with their own
+/// shading normal, every one of them a sliver of 1.0e-6 to 4.4e-5 m² (typical facet
+/// 1.3e-4 m²) in a crease where the averaged vertex normal is not the facet's. That is
+/// 0.05 % by count and 0.003 % by area — nothing a contact stencil can act on alone, since
+/// a cloth vertex within `dhat` of a sub-millimetre sliver is within `dhat` of a dozen
+/// correctly wound neighbours. A genuinely inverted or half-inverted export reads as tens
+/// of percent here and fails.
+#[test]
+fn collision_proxies_are_outward_wound() {
+    let Some(cols) = collision_tiers() else {
+        return;
+    };
+    for col in &cols {
+        let body = load(col);
+        let p = |i: u32| glam::Vec3::from(body.positions[i as usize]);
+        let geo = |t: &[u32; 3]| (p(t[1]) - p(t[0])).cross(p(t[2]) - p(t[0]));
+
+        let (mut vol, mut area) = (0.0f64, 0.0f64);
+        for t in &body.tris {
+            vol += p(t[0]).cross(p(t[1])).dot(p(t[2])) as f64 / 6.0;
+            area += 0.5 * geo(t).length() as f64;
+        }
+        let e = Aabb::of(&body.positions).unwrap().extent();
+        let box_vol = (e[0] * e[1] * e[2]) as f64;
+        assert!(
+            vol > 0.05 * box_vol,
+            "{}: signed volume {vol:.4} m³ against a bounding box of {box_vol:.4} m³ — a body \
+             fills a good fraction of its box, so this is either an INWARD winding (negative) \
+             or an unclosed surface, and the signed mesh collider would push cloth INTO it",
+            col.sex
+        );
+        assert!(area > 0.1, "{}: degenerate proxy, area {area} m²", col.sex);
+
+        // Cross-check against the exporter's own normals, if the proxy ships them.
+        if body.normals.len() != body.positions.len() {
+            continue;
+        }
+        let bad: Vec<&[u32; 3]> = body
+            .tris
+            .iter()
+            .filter(|t| {
+                let shading: glam::Vec3 = t
+                    .iter()
+                    .map(|&i| glam::Vec3::from(body.normals[i as usize]))
+                    .sum();
+                geo(t).dot(shading) < 0.0
+            })
+            .collect();
+        let bad_area: f64 = bad.iter().map(|t| 0.5 * geo(t).length() as f64).sum();
+        assert!(
+            bad.len() * 500 < body.tris.len() && bad_area < 0.001 * area,
+            "{}: {} of {} triangles ({:.3} % by count, {:.4} % of {area:.3} m² by area) are \
+             wound against their own authored glTF normal — beyond the sliver-in-a-crease \
+             noise floor, so the proxy's winding is no longer consistently outward and the \
+             signed mesh collider cannot be trusted on it",
+            col.sex,
+            bad.len(),
+            body.tris.len(),
+            100.0 * bad.len() as f64 / body.tris.len() as f64,
+            100.0 * bad_area / area,
         );
     }
 }

@@ -505,6 +505,10 @@ async fn drape(
     let (bridge, mut updates) = EngineBridge::new(std::sync::Arc::new(env.transport()));
     let epoch = bridge.submit(Submission {
         scene,
+        // A scene file cannot carry stitches — `engine_api::Scene` has no field
+        // for them — so a CLI drape of one is unsewn by construction. Sewing goes
+        // through `nguo_sewing::build`, which needs a *document*, not a scene.
+        stitches: Vec::new(),
         tier,
         frames,
         out_dir: out_dir.clone(),

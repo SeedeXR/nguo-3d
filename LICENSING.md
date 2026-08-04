@@ -53,10 +53,13 @@ convention `core-engine/LICENSES/GPL-2.0-or-later.txt` follows for the code.
    **Seede XR must be named in the shipped credit notice** — not left implicit in
    a copyright line. §5 tracks this as owed alongside the two third-party
    attributions.
-2. **The CC BY 4.0 grant does not reach the baked Mixamo animation.** We cannot
-   sub-license what we do not own. The grant covers the Seede XR modelling data;
-   the motion travels under Adobe's terms, which forbid standalone
-   redistribution. See §5.
+2. **The grant is clean; two things limit the *manner* of redistribution.** The
+   CC BY 4.0 grant over the Seede XR modelling data has nothing carved out of it.
+   But the grant does not *reach* the baked Mixamo motion — we cannot sub-license
+   what we do not own — so the avatar files may travel as a character and not as an
+   animation pack; and the metadata embedded in the two `.vrm` files is narrower
+   than the grant, so those particular files carry a redistribution limit until the
+   export is re-run. Neither is a licence exception. Both are in §5.
 
 ## 1. The project licence (code)
 
@@ -234,8 +237,10 @@ tools, no build and no network.
 
 `cargo-about 0.9.1` is installed, `make attribution` regenerates
 `core-engine/LICENSES/THIRD_PARTY.md` (172 crates) and
-`ui/LICENSES/THIRD_PARTY.md` (**478** crates as of 2026-08-03 — was 459; the
-avatar work added crates to `ui`), and `make licenses` depends on
+`ui/LICENSES/THIRD_PARTY.md` (**482** crates, measured 2026-08-03 — 459 before the
+avatar work, 478 after it, then `spade` and `nguo-triangulate` landed; the count
+moves whenever `ui`'s graph does, so regenerate rather than trust this number), and
+`make licenses` depends on
 `make attribution-check`, which regenerates into a temp dir and **fails the
 build on any difference** — a stale attribution file cannot sit there quietly.
 CI runs the same make target (`.github/workflows/licenses.yml`) with
@@ -318,10 +323,11 @@ shipped bytes instead of stopping at the `.blend`. Source:
 **What is left is smaller and is not this blocker.** The new bundle brings these
 live items, all tracked in §5 and in `assets/avatars/LICENSE.md`: **three**
 CC BY 4.0 attribution obligations that are **owed** (Seede XR itself, the skin
-textures, the MST scale), a Mixamo constraint on **how we may distribute** the
-avatar files, and — new since the CC BY 4.0 decision — a **VRM metadata conflict**
-that needs the export pipeline re-run. None of them blocks commercial use of the
-geometry; they constrain the credits screen and the distribution channel.
+textures, the MST scale), and **two constraints on the manner of redistribution** —
+the baked Mixamo clips, and the `VRMC_vrm.meta` block in the two `.vrm` files,
+which is narrower than the grant until the export pipeline is re-run. None of them
+blocks commercial use of the geometry, and none is an exception to the CC BY 4.0
+grant; they constrain the credits screen and the distribution channel.
 
 **D-5 is untouched and still open.** D-5 is "no openly-licensed *parametric*
 body model exists for us". This was "the *static* bodies we have came from
@@ -366,8 +372,8 @@ worth naming individually.
 | **Avatar modelling data** — the body meshes, rigs, weights, LODs, collision proxies and previews behind both avatars in `assets/avatars/`; **ours, not a third party's** | **CC BY 4.0**, licensor **Seede XR** | Owned outright, so §2 is satisfied at the root and Seede XR has standing to license it onward. Released CC BY 4.0 by maintainer decision 2026-08-03 (§0). **The former release blocker is CLOSED — see §4.** **Attribution is REQUIRED, including to ourselves** | `assets/avatars/LICENSE.md`, `assets/avatars/LICENSES/CC-BY-4.0.txt`, `assets/avatars/docs/ATTRIBUTION.md`, and the credits screen |
 | **Avatar skin textures** — refined from downloaded PBR skin scans (texturecan.com *Human Face Skin Texture*; cgbookcase.com *human-skin1*) | **CC BY 4.0** | Permissive, GPL-compatible. **Attribution is REQUIRED** — see the obligation note below. Recorded as CC BY 4.0 deliberately though texturecan's site states CC0: crediting satisfies both, so the stricter reading costs nothing. Shipped maps are retinted/remapped derivatives, which CC BY 4.0 permits | `assets/avatars/LICENSE.md`, `assets/avatars/docs/ATTRIBUTION.md`, and the credits screen |
 | **Monk Skin Tone (MST) Scale** — the ten skin-tone values, by Dr Ellis Monk in partnership with Google (<https://skintone.google/>), pinned in `assets/avatars/data/skin_tones.json` | CC BY 4.0 | Permissive, GPL-compatible. **Attribution is REQUIRED** — see the obligation note below this table | `assets/avatars/LICENSE.md`, `assets/avatars/docs/ATTRIBUTION.md`, and the credits screen once the tone picker ships |
-| **Mixamo animation clips** — 19 Adobe Mixamo runway clips, retargeted and baked into the avatar GLBs/VRMs | Adobe Mixamo terms — free to use, including commercially; licensed to the downloading account | Baked into a derived character, which is the intended use. **Does NOT travel under our CC BY 4.0 grant** — we cannot sub-license what we do not own. **Do not redistribute the GLB/VRM/FBX as a downloadable asset pack**, because the animation data would then travel standalone and the service is not licensed for that. Re-confirm against Adobe's current terms before release | `assets/avatars/LICENSE.md`, `assets/avatars/docs/ATTRIBUTION.md` |
-| **VRM metadata** — the `VRMC_vrm.meta` block embedded in `assets/avatars/avatars/vrm/*.vrm` | declares **VRM Public License 1.0**, `allowRedistribution: false`, `avatarPermission: onlyAuthor` | ⚠️ **It CONTRADICTS the CC BY 4.0 grant on the same files.** CC BY 4.0 grants redistribution and derivatives to anyone; the embedded metadata denies both, and VRM consumers read the metadata programmatically and will believe it over a text file. **Open item — the export pipeline must be re-run**; see the note below | `assets/avatars/LICENSE.md` (§ VRM metadata), `assets/avatars/docs/ATTRIBUTION.md` |
+| **Mixamo animation clips** — 19 Adobe Mixamo runway clips, retargeted and baked into the avatar GLBs/VRMs | Adobe Mixamo terms — free to use, including commercially; licensed to the downloading account | Baked into a derived character, which is the intended use. **Our CC BY 4.0 grant covers the modelling data and does not reach this motion** — we cannot sub-license what we do not own, and nothing is over-granted by that. It bounds the **manner of redistribution**: these files may travel as a character, **not as a standalone animation pack**, because the clips would then travel as animation data on their own. Re-confirm against Adobe's current terms before release | `assets/avatars/LICENSE.md`, `assets/avatars/docs/ATTRIBUTION.md` |
+| **VRM metadata** — the `VRMC_vrm.meta` block embedded in `assets/avatars/avatars/vrm/*.vrm` | declares **VRM Public License 1.0**, `allowRedistribution: false`, `avatarPermission: onlyAuthor` | **Narrower than the CC BY 4.0 grant on the same files, so those two files carry a redistribution limitation** the GLBs do not. Every divergence runs restrictive — nothing is over-granted — but VRM consumers read the metadata programmatically, so it is what governs a VRM tool's behaviour. Lifting it means re-running the export; see the note below | `assets/avatars/LICENSE.md` (§ VRM metadata), `assets/avatars/docs/ATTRIBUTION.md` |
 | **Blender** 5.2.0 LTS — the tool the avatar bundle was built with | GNU GPL v3 | **No obligation on the assets.** The GPL covers the application, not its output; a mesh exported from Blender is unencumbered by Blender's licence. Listed only because the question gets asked | `assets/avatars/docs/ATTRIBUTION.md` |
 | **Brand assets** — `ui/assets/brand-icon/`, `ui/assets/images/splash_screen_image.png` | **unverified** — no attribution file present | Believed original work by Seede XR, but nothing in the tree records it. Needs a `LICENSE.md` alongside the other asset directories | *nowhere yet* |
 
@@ -390,43 +396,59 @@ The first is the one that is easy to miss: **licensing our own work under CC BY
 see who the licensor is, so Seede XR has to be *named* in the shipped notice, not
 left implicit in a copyright line.
 
-**One consolidated notice discharges all three.** It lives verbatim in
-`assets/avatars/LICENSE.md` for the about screen to paste:
+**One consolidated notice discharges all three, and it lives in exactly one
+place:** **`nguo_avatar::ATTRIBUTION_NOTICE`**
+(`ui/crates/nguo-avatar/src/skin.rs:69`), with `nguo_avatar::MONK_ATTRIBUTION` for
+the Monk line alone. A `pub const` an about screen renders directly, asserted on by
+`ui/crates/nguo-avatar/tests/bundle.rs`.
 
-> **Avatars.** Avatar body meshes, rigs and skin data © Seede XR, licensed under
-> [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Skin textures based
-> on material from texturecan.com and cgbookcase.com (CC BY 4.0). Complexion
-> range based on the Monk Skin Tone Scale by Ellis Monk in partnership with
-> Google (CC BY 4.0). Character animation from Adobe Mixamo.
+**This document quotes it by name and does not restate the text.** Hand-copied
+variants of the notice are what produced an under-attributing build earlier: the
+copies drifted, and the shorter ones lost "licensed under CC BY 4.0" and the
+licence URL that CC BY 4.0 §3(a)(1)(C) asks for. One string, one authority — change
+it in `skin.rs` and every reader gets the change.
 
 None of this is enforceable by any tool in this repo — `cargo-deny` sees Cargo
 dependencies only, and `cargo-about` only reads crate metadata — so it is a
 **review item on the PR that builds the about/credits screen**.
 
-### Open item: the VRM metadata contradicts the CC BY 4.0 grant
+### The two redistribution constraints, and why neither is a licence exception
 
-`assets/avatars/avatars/vrm/nguo_female.vrm` and `nguo_male.vrm` embed a
-`VRMC_vrm.meta` block stating `allowRedistribution: false`,
-`avatarPermission: onlyAuthor`, and a `licenseUrl` pointing at the VRM Public
-License 1.0. **CC BY 4.0 grants redistribution and derivative works to anyone,
-with attribution.** Both statements cannot be true, and a VRM consumer reads the
-embedded metadata programmatically — it will believe the binary over this
-document.
+**The CC BY 4.0 grant in §0 stands with nothing carved out of it.** Seede XR's
+modelling data — meshes, rigs, weights, LODs, collision proxies, the derived tiers
+and the previews — is licensed CC BY 4.0, attribution required, and that is the
+whole obligation on our own work. What follows constrains **how two of the shipped
+files may be passed on**. Neither reduces the grant, and neither over-grants
+anything.
 
-As it stands the VRM files misrepresent their licence in the *more restrictive*
-direction, which is the less dangerous error but still an error.
+**1. The Mixamo motion is outside the grant, so the files travel as a character
+and not as a motion library.** The 19 clips are Adobe's, licensed to the account
+that downloaded them; we cannot sub-license them under CC BY 4.0. Baked into a
+derived character used in the application, they may travel — that is the intended
+use of Mixamo content. Republished as a standalone animation pack (GLB, VRM or
+FBX), they may not. If the assets are ever released as a CC BY 4.0 asset pack, the
+clean way is to export it **without** baked clips, which makes the pack and the
+grant coextensive.
 
-**This cannot be fixed in this repo.** The metadata is written by the avatar
-pipeline's **`scripts/09_export_vrm.py`**, which lives upstream; hand-editing a
-`.vrm` binary is not the fix. The item is therefore: **re-run the export with
-metadata matching CC BY 4.0** — `allowRedistribution: true`, `avatarPermission`
-widened to `everyone`, `creditNotation: required` kept (CC BY requires
-attribution anyway, so that field was already right), and
-`licenseUrl`/`otherLicenseUrl` pointed at
+**2. The `VRMC_vrm.meta` block in the two `.vrm` files is narrower than the
+grant.** `assets/avatars/avatars/vrm/nguo_female.vrm` and `nguo_male.vrm` embed
+`allowRedistribution: false`, `avatarPermission: onlyAuthor` and a `licenseUrl`
+pointing at the VRM Public License 1.0. CC BY 4.0 grants redistribution and
+derivatives to anyone with attribution; the embedded values withhold that. Every
+divergence runs in the **restrictive** direction, so a VRM recipient gets less than
+CC BY 4.0 offers and never more — but a VRM consumer reads the block
+programmatically, so it is what governs that tool's behaviour, and those two files
+therefore carry a redistribution limitation the GLBs do not.
+
+**Lifting it needs the export re-run, and cannot be done in this repo.** The
+metadata is written by the avatar pipeline's **`scripts/09_export_vrm.py`**, which
+lives upstream and is not part of this repository; hand-editing a `.vrm` binary is
+not the fix. Target values: `allowRedistribution: true`, `avatarPermission` widened
+to `everyone`, `creditNotation: required` kept (CC BY requires attribution anyway,
+so that field was already right), and `licenseUrl`/`otherLicenseUrl` pointed at
 <https://creativecommons.org/licenses/by/4.0/> — then replace both binaries here.
-Review the widened values against actual commercial intent as part of that
-change. Detail and the full field-by-field conflict table:
-`assets/avatars/LICENSE.md`.
+Review the widened values against actual commercial intent as part of that change.
+Field-by-field table: `assets/avatars/LICENSE.md`.
 
 ## 6. Adding a dependency
 

@@ -82,6 +82,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocator-api2"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+
+[[package]]
 name = "android-activity"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1808,6 +1814,8 @@ version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 dependencies = [
+ "allocator-api2",
+ "equivalent",
  "foldhash 0.2.0",
 ]
 
@@ -2647,15 +2655,20 @@ dependencies = [
  "nguo-avatar",
  "nguo-canvas",
  "nguo-doc",
+ "nguo-engine-bridge",
  "nguo-gpu",
  "nguo-keymap",
  "nguo-registry",
+ "nguo-sewing",
  "nguo-splash",
+ "nguo-triangulate",
  "nguo-ui-theme",
  "nguo-ui-widgets",
  "nguo-viewport3d",
  "pollster",
+ "serde_json",
  "thiserror 2.0.19",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "vello",
@@ -2702,7 +2715,12 @@ version = "0.0.1"
 dependencies = [
  "approx",
  "iced",
+ "nguo-doc",
+ "nguo-doc-commands",
  "nguo-gpu",
+ "nguo-pattern",
+ "nguo-ui-theme",
+ "proptest",
  "tracing",
  "vello",
 ]
@@ -2759,6 +2777,8 @@ dependencies = [
 name = "nguo-engine-bridge"
 version = "0.0.1"
 dependencies = [
+ "engine-api",
+ "engine-core",
  "serde",
  "serde_json",
  "tempfile",
@@ -2835,10 +2855,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "nguo-sewing"
+version = "0.0.1"
+dependencies = [
+ "kurbo 0.13.1",
+ "nguo-doc",
+ "nguo-pattern",
+ "nguo-triangulate",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tracing",
+]
+
+[[package]]
 name = "nguo-splash"
 version = "0.0.1"
 dependencies = [
  "iced",
+]
+
+[[package]]
+name = "nguo-triangulate"
+version = "0.0.1"
+dependencies = [
+ "kurbo 0.13.1",
+ "nguo-pattern",
+ "proptest",
+ "serde",
+ "serde_json",
+ "spade",
+ "thiserror 2.0.19",
+ "tracing",
 ]
 
 [[package]]
@@ -4014,6 +4061,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "robust"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
+
+[[package]]
 name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4474,6 +4527,18 @@ dependencies = [
  "web-sys",
  "windows-sys 0.61.2",
  "x11rb",
+]
+
+[[package]]
+name = "spade"
+version = "2.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9699399fd9349b00b184f5635b074f9ec93afffef30c853f8c875b32c0f8c7fa"
+dependencies = [
+ "hashbrown 0.16.1",
+ "num-traits",
+ "robust",
+ "smallvec",
 ]
 
 [[package]]

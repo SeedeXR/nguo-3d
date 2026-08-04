@@ -405,6 +405,18 @@ pub struct ImplicitSolver {
     /// ELEMENTS (membrane/bending) always come from `state.tris`; this list is
     /// collision geometry only.
     collision_tris: Vec<[u32; 3]>,
+    /// Per-vertex: does this vertex belong to a **static mesh collider** — a closed,
+    /// outward-wound body proxy the cloth collides against? Empty (the default) means
+    /// "no mesh collider in this scene" and every contact stays unsigned, exactly as
+    /// before. Set through [`ImplicitSolver::set_static_collider_verts`].
+    ///
+    /// This cannot be inferred from immovability. A fully pinned cloth sheet is
+    /// immovable too, and it is a SHEET: it has no inside, its winding is arbitrary, and
+    /// cloth rests on both of its faces. Signing contact against it by its own normal
+    /// pushes half the resting contacts straight through it — measured, three
+    /// self-collision tests failed exactly that way when this was `all three vertices
+    /// pinned`.
+    static_collider_vert: Vec<bool>,
     colliders: Vec<Collider>,
     /// Vertex position constraints (the port of the reference's `FixPair`).
     pins: Vec<Pin>,
@@ -418,10 +430,47 @@ pub struct ImplicitSolver {
     rod_hinges: Vec<crate::rod_bend::RodHinge>,
     /// Seam stitches (the reference's `constraint.stitch`).
     stitches: Vec<Stitch>,
-    /// Triplet count of the last assembly, used to reserve the next one exactly. `Cell`
-    /// because `assemble` takes `&self`; it is a pure size hint, so a stale value only costs
-    /// one realloc.
+    /// Triplet pushes the last assembly made. `Cell` because `assemble` takes `&self`; it is a
+    /// pure diagnostic now that the sink sizes its own buffer.
+    ///
+    /// It counts pushes *before* the Dirichlet drop, because that used to be the count the
+    /// `Vec` had to hold. Recording the post-retain length under-reserved by exactly the
+    /// dropped rows, so the `Vec` doubled and the doubling overshot: measured at V=30 394,
+    /// capacity 44 263 932 (506.6 MB) for 17 711 693 live entries, and ratcheting
+    /// 8 388 608 -> 14 114 728 -> 20 948 412 across one step's three Newton iterations.
+    /// The whole failure mode is now designed out — see [`crate::csr::TripletSink`], whose
+    /// buffer is ceilinged at `CHUNK_MAX` entries whatever the assembly pushes.
     trips_hint: std::cell::Cell<usize>,
+    /// Capacity, in entries, of the sink's chunk buffer after the last assembly — the
+    /// assembly's largest single allocation, kept so a test can assert on it instead of a
+    /// human reading `MGUSO_ASM_STATS`.
+    trips_cap: std::cell::Cell<usize>,
+    /// **The streaming Hessian accumulator, kept for the life of the solver instead of
+    /// reallocated per assembly.** This is the reference's rule, not a micro-optimisation:
+    /// `ppf-cts-gauge/docs/PORTING_data_layout.md` — "the DataSet's heap buffers must not be
+    /// freed or reallocated for the run".
+    ///
+    /// It used to be a `Vec<Triplet>` holding the whole assembly, and that `Vec` was the
+    /// solver's ceiling above ~40 k cloth vertices: measured at 10 000 cloth vertices over the
+    /// male COL proxy, 34 552 512 pushes in a 67 108 864-entry buffer = **768 MB** for a
+    /// 1 073 145-nnz CSR of 8.2 MB. [`crate::csr::TripletSink`] folds the entries into that
+    /// CSR in bounded chunks instead; its doc comment carries the measurements and the one
+    /// numerics consequence.
+    ///
+    /// PEAK LIVE BYTES ARE NOT THE FOOTPRINT, which is why the buffers are held rather than
+    /// re-made. Measured, 5 041 cloth vertices over the male COL proxy, 12 steps: peak live
+    /// 149.4 MB against `/usr/bin/time -l` maximum RSS **1 367 425 024 B, 9.2x**, with live at
+    /// the moment RSS crossed 220 MB only 29.6 MB. RSS also fell between steps (618 → 410 →
+    /// 645 → 380 MB), so it was never a leak — it was macOS libmalloc holding freed regions.
+    /// The reason it held them was visible in `MGUSO_ASM_STATS`: consecutive assemblies asked
+    /// for capacity 4 989 435, 5 008 470, 5 003 745, 4 999 177, 5 018 268 — **a different size
+    /// every time**, so a freed region never matched the next request and the cache only grew.
+    /// The sink's chunk buffer is a power of two ceilinged at `CHUNK_MAX`, so consecutive
+    /// assemblies now ask for the *same* size.
+    ///
+    /// `RefCell` for the same reason `trips_hint` is a `Cell`: `assemble` takes `&self`. The
+    /// borrow is confined to `assemble`, which is the only place that touches it.
+    trips_buf: std::cell::RefCell<crate::csr::TripletSink>,
     /// Faces carrying the reference's strain-limit BARRIER, with each face's limit and
     /// mass (see [`ImplicitSolver::set_strain_limit_faces`]). Independent of the
     /// membrane/shell split: the reference applies strain limiting to every shell face
@@ -502,6 +551,7 @@ impl ImplicitSolver {
             shell_plast: Vec::new(),
             hinge_plast: Vec::new(),
             collision_tris,
+            static_collider_vert: Vec::new(),
             colliders: Vec::new(),
             pins: Vec::new(),
             pulls: Vec::new(),
@@ -509,6 +559,8 @@ impl ImplicitSolver {
             rod_hinges: Vec::new(),
             stitches: Vec::new(),
             trips_hint: std::cell::Cell::new(0),
+            trips_cap: std::cell::Cell::new(0),
+            trips_buf: std::cell::RefCell::new(crate::csr::TripletSink::new()),
             sl_faces: Vec::new(),
             hinge_k: Vec::new(),
             vertex_area,
@@ -518,6 +570,15 @@ impl ImplicitSolver {
             edges,
             char_len,
         }
+    }
+
+    /// Per-vertex "can move" mask for the self-collision broad phase — the static mesh
+    /// collider (D-17, see [`crate::broadphase::any_movable`] for why this is the right
+    /// predicate). Derived from `inv_mass` on every call rather than cached, so pinning
+    /// and unpinning are picked up with no bookkeeping; it is O(n) bools against a broad
+    /// phase that is O(candidate pairs), i.e. free at the scale where it matters.
+    fn movable_mask(&self) -> Vec<bool> {
+        self.state.inv_mass.iter().map(|&m| m > 0.0).collect()
     }
 
     /// Whether configuration `x` has any self-intersection (an edge piercing a
@@ -539,6 +600,7 @@ impl ImplicitSolver {
             &self.edges,
             &self.collision_tris,
             self.char_len,
+            &self.movable_mask(),
             |ei, ti| {
                 let e = self.edges[ei as usize];
                 let t = self.collision_tris[ti as usize];
@@ -573,7 +635,88 @@ impl ImplicitSolver {
     /// for edge–edge (`contact.cu:728`). The separation vector is then `e = d·n̂`.
     ///
     /// `blocks`/`slots` carry the pre-gathered elastic Hessian (see
-    /// [`Self::gather_elastic_blocks`]); a missing pair contributes a zero block.
+    /// [`crate::csr::TripletSink::blocks`]); a missing pair contributes a zero block.
+    /// Every ACTIVE self-collision stencil, both kinds, for positions `x`.
+    ///
+    /// Split out of [`Self::assemble`] and called **before** any triplet is pushed, which is
+    /// what lets the assembler pre-register the `fixed_hess_in` pairs and then filter Dirichlet
+    /// rows at push time. It reads `x` and solver state only — never assembled data — so
+    /// hoisting it cannot change the stencil set.
+    ///
+    /// Each stencil is `(vertex indices, gap, distance gradient, activation gap)`. The
+    /// reference's `ghat` is per-element, composed as the MEAN of the two participants'
+    /// (`contact.cu:721`), unlike `offset` which is a SUM; face stencils use the scene-wide
+    /// `dhat`.
+    fn self_collision_stencils(&self, x: &[Vec3]) -> Vec<([usize; 4], f32, [Vec3; 4], f32)> {
+        let dhat = self.params.contact_dhat;
+        let mut stencils: Vec<([usize; 4], f32, [Vec3; 4], f32)> = Vec::new();
+        let movable = self.movable_mask();
+        for (v, ti) in crate::broadphase::vertex_triangle_pairs(
+            x,
+            &self.collision_tris,
+            dhat,
+            &self.exclusion,
+            &movable,
+        ) {
+            let t = self.collision_tris[ti as usize];
+            let idx = [v as usize, t[0] as usize, t[1] as usize, t[2] as usize];
+            // STATIC MESH COLLIDER TRIANGLE ⇒ SIGNED gap. A body proxy is a closed,
+            // outward-wound surface, so "inside" is well defined and the barrier must know it:
+            // with the unsigned distance the gradient points away from the surface on whichever
+            // side the vertex already is, so a garment starting micrometres inside is pushed
+            // deeper and falls through the body silently. Cloth-cloth pairs — including cloth
+            // resting on a fully PINNED sheet — keep the unsigned distance: a sheet has no
+            // consistent outside, and CCD is what stops them crossing.
+            let (d, g) = if self.is_collider_tri(&idx) {
+                contact::signed_point_tri_distance_grad(x[idx[0]], x[idx[1]], x[idx[2]], x[idx[3]])
+            } else {
+                contact::point_tri_distance_grad(x[idx[0]], x[idx[1]], x[idx[2]], x[idx[3]])
+            };
+            // Keep only ACTIVE stencils. Both barriers return `None` for `d >= ghat`
+            // (`contact::barrier`, `cubic_barrier`) and friction is nested inside that `Some`,
+            // so an inactive stencil contributes no gradient, no Hessian and no friction — it
+            // only inflated `slots`/`blocks`, which are sized at 16 entries PER STENCIL. On
+            // `fishingknot` the broadphase offers ~600 K candidates of which a few hundred are
+            // in contact, so this is a ~100x reduction in stencils with an identical result.
+            //
+            // VERIFIED equivalent, not assumed: `domino` (252 active contacts) reaches frame 50
+            // in 167 steps with max_rel 1.7801e-1 / rms 3.7437e-2 / centroid_rel 8.6935e-3 both
+            // with and without this filter — byte-identical. It is also a large SPEED win there
+            // (the unfiltered run does not finish inside 2 minutes), though only ~3% of the
+            // allocated bytes, because domino's real cost is the 17.3 M raw candidate pairs the
+            // CCD broadphase builds BEFORE this point — labelled B-1 in the internal audit notes.
+            if d >= dhat {
+                continue;
+            }
+            stencils.push((idx, d, g, dhat));
+        }
+        // Thick rods touch when their centrelines are `2*offset + dhat` apart, so the edge-edge
+        // broad phase gets the widened radius. Zero for rod-free scenes.
+        let ee_search = self.max_edge_gap() + 2.0 * self.max_edge_offset();
+        for (ei, ej) in crate::broadphase::edge_edge_pairs(x, &self.edges, ee_search, &movable) {
+            let (ea, eb) = (self.edges[ei as usize], self.edges[ej as usize]);
+            let idx = [
+                ea[0] as usize,
+                ea[1] as usize,
+                eb[0] as usize,
+                eb[1] as usize,
+            ];
+            let (d, g) =
+                contact::segment_segment_distance_grad(x[idx[0]], x[idx[1]], x[idx[2]], x[idx[3]]);
+            // The reference's barrier acts on `g = ‖e‖ − offset` (`barrier.cu:103-116`) with the
+            // offset SUMMED over the two participants (`contact.cu:558`). Because
+            // `∂(d − offset)/∂x = ∂d/∂x`, subtracting it here is exact and the gradient/Hessian
+            // assembly needs no change. Face edges carry offset 0, so cloth is untouched.
+            let off = self.edge_offset[ei as usize] + self.edge_offset[ej as usize];
+            let pair_ghat = 0.5 * (self.edge_gap(ei as usize) + self.edge_gap(ej as usize));
+            if d - off >= pair_ghat {
+                continue; // inactive — see the vertex-triangle note above
+            }
+            stencils.push((idx, d - off, g, pair_ghat));
+        }
+        stencils
+    }
+
     fn self_contact_rayleigh(
         &self,
         blocks: &[[f32; 9]],
@@ -947,32 +1090,6 @@ impl ImplicitSolver {
         self.sl_faces.len()
     }
 
-    /// Gather the requested 3×3 blocks of the elastic Hessian assembled so far.
-    ///
-    /// The reference's dynamic stiffnesses (`barrier::compute_stiffness`,
-    /// `strainlimiting::compute_stiffness`) read `fixed_hess_in(vi, vj)` for every PAIR in
-    /// a stencil, off-diagonals included. Our assembler holds the Hessian as triplets, so
-    /// this makes ONE pass over them and accumulates only into the requested pairs —
-    /// `O(nnz)` with a hash probe per triplet, the same cost shape as the diagonal-only
-    /// extraction it generalizes.
-    ///
-    /// `slots` maps a `(vi, vj)` vertex pair to its index in the returned block list.
-    /// Blocks are row-major 3×3: `block[3·r + c] = H[3·vi+r][3·vj+c]`.
-    fn gather_elastic_blocks(
-        trips: &[crate::csr::Triplet],
-        slots: &std::collections::HashMap<(u32, u32), usize>,
-    ) -> Vec<[f32; 9]> {
-        let mut out = vec![[0.0f32; 9]; slots.len()];
-        for &(r, c, v) in trips {
-            let key = (r / 3, c / 3);
-            if let Some(&slot) = slots.get(&key) {
-                let (r, c) = (r as usize, c as usize);
-                out[slot][3 * (r % 3) + (c % 3)] += v;
-            }
-        }
-        out
-    }
-
     /// Attach volumetric (tet) elements, built from the CURRENT positions as the
     /// rest state (`crate::tet::build_tets`). Degenerate tets are skipped and
     /// winding is normalized. Requires `tet_mu`/`tet_lambda` > 0 or a per-tet table
@@ -1086,6 +1203,89 @@ impl ImplicitSolver {
     /// The triangles used for self-collision (cloth tris + tet boundary surface).
     pub fn collision_tris(&self) -> &[[u32; 3]] {
         &self.collision_tris
+    }
+
+    /// Declare which vertices belong to a **static mesh collider** — a closed,
+    /// outward-wound body proxy (`engine_api::Object { is_static: true, .. }`). A
+    /// vertex-triangle contact whose whole triangle is collider geometry then uses a
+    /// SIGNED gap ([`contact::signed_point_tri_distance_grad`]) instead of the unsigned
+    /// point-triangle distance, so cloth that starts inside the body is pushed back OUT
+    /// rather than deeper in.
+    ///
+    /// Opt-in on purpose. Without it every contact behaves exactly as it did before, and
+    /// the caller is asserting the precondition the sign relies on: the marked geometry is
+    /// closed and its triangles are wound outward. `engine_api::Scene::build_implicit`
+    /// sets it from `is_static`; the shipped avatar proxies are checked against it in
+    /// `engine-api/tests/avatar_bundle.rs::collision_proxies_are_outward_wound`.
+    ///
+    /// A shorter mask than the vertex count, or an empty one, disables the signed path —
+    /// and so does geometry that fails the outward-winding check below, loudly.
+    pub fn set_static_collider_verts(&mut self, mask: &[bool]) {
+        self.static_collider_vert = Vec::new();
+        if mask.len() != self.state.vertex_count() {
+            return;
+        }
+        // The winding is CHECKED, not trusted. An inward-wound proxy would invert every
+        // sign and suck the cloth into the body — the same silent failure the signed gap
+        // exists to fix, only harder to spot. Signed volume by the divergence theorem,
+        // `V = 1/6 Sum (a x b).c`, about the sub-mesh's own centroid so it is translation
+        // invariant: positive means outward. `box_mesh` in `engine-api/tests/regression.rs`
+        // is a real example of an inward-wound collider, and it reaches this path.
+        //
+        // A flat, open collider (the triangulated floor of the D-17 oracle) has no volume
+        // to test, so the check abstains and the caller's winding stands. That is the
+        // honest limit of what geometry alone can tell you.
+        let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+        let mut marked: Vec<[usize; 3]> = Vec::new();
+        for t in &self.collision_tris {
+            let idx = [t[0] as usize, t[1] as usize, t[2] as usize];
+            if !idx.iter().all(|&i| mask[i]) {
+                continue;
+            }
+            for &i in &idx {
+                lo = lo.min(self.state.positions[i]);
+                hi = hi.max(self.state.positions[i]);
+            }
+            marked.push(idx);
+        }
+        if marked.is_empty() {
+            return;
+        }
+        let e = hi - lo;
+        let box_vol = (e.x * e.y * e.z) as f64;
+        let mid = 0.5 * (lo + hi);
+        let vol: f64 = marked
+            .iter()
+            .map(|idx| {
+                let (a, b, c) = (
+                    self.state.positions[idx[0]] - mid,
+                    self.state.positions[idx[1]] - mid,
+                    self.state.positions[idx[2]] - mid,
+                );
+                a.cross(b).dot(c) as f64 / 6.0
+            })
+            .sum();
+        if vol < -0.05 * box_vol {
+            tracing::warn!(
+                signed_volume = vol,
+                bounding_volume = box_vol,
+                tris = marked.len(),
+                "static mesh collider is wound INWARD — falling back to the unsigned \
+                 point-triangle distance, so cloth authored inside it will not recover. \
+                 Reverse the triangle winding to enable signed body contact."
+            );
+            return;
+        }
+        self.static_collider_vert = mask.to_vec();
+    }
+
+    /// Is every vertex of this stencil's triangle static collider geometry?
+    #[inline]
+    fn is_collider_tri(&self, idx: &[usize; 4]) -> bool {
+        !self.static_collider_vert.is_empty()
+            && self.static_collider_vert[idx[1]]
+            && self.static_collider_vert[idx[2]]
+            && self.static_collider_vert[idx[3]]
     }
 
     /// The built tet elements (rest state baked in).
@@ -1467,64 +1667,91 @@ impl ImplicitSolver {
             // buckets of ~25 on `domino`) instead of the degenerate one (cell 2.0, one bucket
             // of 1344). Widening x4 reaches `max_disp` in at most a few passes.
             let mut allowed = (0.5 * self.char_len).min(max_disp).max(1.0e-9);
+            // Hoisted out of the widening loop — the mask does not depend on `allowed`.
+            let movable = self.movable_mask();
             loop {
                 let full = allowed >= max_disp;
                 let search = fixed + 2.0 * allowed;
                 let mut t_self = 1.0f32;
-                let pairs = crate::broadphase::vertex_triangle_pairs(
+                // STREAMED, not collected: this loop only takes a `min`, so a duplicate
+                // candidate is harmless, and materialising the list was the single largest
+                // allocation in the solver — see `broadphase::for_each_edge_edge_pair` for
+                // the per-widening-pass pair counts and what they cost.
+                crate::broadphase::for_each_vertex_triangle_pair(
                     x,
                     &self.collision_tris,
                     search,
                     &self.exclusion,
+                    &movable,
+                    |v, ti| {
+                        let tri = self.collision_tris[ti as usize];
+                        let idx = [
+                            v as usize,
+                            tri[0] as usize,
+                            tri[1] as usize,
+                            tri[2] as usize,
+                        ];
+                        // Already INSIDE a static body triangle: skip, exactly as the analytic
+                        // collider loop above does (`if d0 <= 0.0 { continue; // barrier
+                        // resolves }`). ACCD works on the UNSIGNED distance, so it reads the
+                        // vertex's journey back out through the surface as an impact and would
+                        // brake it against the surface it is trying to leave.
+                        if self.is_collider_tri(&idx)
+                            && contact::signed_point_tri_distance_grad(
+                                x[idx[0]], x[idx[1]], x[idx[2]], x[idx[3]],
+                            )
+                            .0 < 0.0
+                        {
+                            return;
+                        }
+                        let x0 = [x[idx[0]], x[idx[1]], x[idx[2]], x[idx[3]]];
+                        let dd = [dx[idx[0]], dx[idx[1]], dx[idx[2]], dx[idx[3]]];
+                        // offset=0 (zero-thickness cloth): ACCD keeps the pair ~REDUCTION·gap
+                        // apart; the IPC barrier provides the repulsion. (A vertex-triangle
+                        // pair only; a vertex sliding through a shared EDGE between two
+                        // triangles is not captured here — that needs edge-edge CCD, the
+                        // documented next step for full hard-impact robustness.)
+                        let toi =
+                            contact::accd_toi(&x0, &dd, 0.0, MAX_T, REDUCTION, ccd_iters, |p| {
+                                let d = contact::point_triangle_distance(p[0], p[1], p[2], p[3]);
+                                d * d
+                            });
+                        t_self = t_self.min(toi / MAX_T);
+                    },
                 );
-                for (v, ti) in pairs {
-                    let tri = self.collision_tris[ti as usize];
-                    let idx = [
-                        v as usize,
-                        tri[0] as usize,
-                        tri[1] as usize,
-                        tri[2] as usize,
-                    ];
-                    let x0 = [x[idx[0]], x[idx[1]], x[idx[2]], x[idx[3]]];
-                    let dd = [dx[idx[0]], dx[idx[1]], dx[idx[2]], dx[idx[3]]];
-                    // offset=0 (zero-thickness cloth): ACCD keeps the pair ~REDUCTION·gap
-                    // apart; the IPC barrier provides the repulsion. (A vertex-triangle
-                    // pair only; a vertex sliding through a shared EDGE between two
-                    // triangles is not captured here — that needs edge-edge CCD, the
-                    // documented next step for full hard-impact robustness.)
-                    let toi = contact::accd_toi(&x0, &dd, 0.0, MAX_T, REDUCTION, ccd_iters, |p| {
-                        let d = contact::point_triangle_distance(p[0], p[1], p[2], p[3]);
-                        d * d
-                    });
-                    t_self = t_self.min(toi / MAX_T);
-                }
 
                 // Edge-edge pairs: catches a vertex/edge sliding through a shared
                 // triangle EDGE — the through-edge crossing vertex-triangle CCD misses.
                 // Together, V-T + E-E CCD make surface crossing impossible, so the
                 // unsigned barrier never sees a sign flip (intersection-free by
                 // construction, the reference's guarantee).
-                let ee = crate::broadphase::edge_edge_pairs(x, &self.edges, search);
-                for (ei, ej) in ee {
-                    let (ea, eb) = (self.edges[ei as usize], self.edges[ej as usize]);
-                    let idx = [
-                        ea[0] as usize,
-                        ea[1] as usize,
-                        eb[0] as usize,
-                        eb[1] as usize,
-                    ];
-                    let x0 = [x[idx[0]], x[idx[1]], x[idx[2]], x[idx[3]]];
-                    let dd = [dx[idx[0]], dx[idx[1]], dx[idx[2]], dx[idx[3]]];
-                    // Thickness: the pair's offset is the SUM of the two segments' radii
-                    // (`contact.cu:558`), so CCD stops them at surface contact, not centreline
-                    // contact.
-                    let off = self.edge_offset[ei as usize] + self.edge_offset[ej as usize];
-                    let toi = contact::accd_toi(&x0, &dd, off, MAX_T, REDUCTION, ccd_iters, |p| {
-                        let d = contact::segment_segment_distance(p[0], p[1], p[2], p[3]);
-                        d * d
-                    });
-                    t_self = t_self.min(toi / MAX_T);
-                }
+                crate::broadphase::for_each_edge_edge_pair(
+                    x,
+                    &self.edges,
+                    search,
+                    &movable,
+                    |ei, ej| {
+                        let (ea, eb) = (self.edges[ei as usize], self.edges[ej as usize]);
+                        let idx = [
+                            ea[0] as usize,
+                            ea[1] as usize,
+                            eb[0] as usize,
+                            eb[1] as usize,
+                        ];
+                        let x0 = [x[idx[0]], x[idx[1]], x[idx[2]], x[idx[3]]];
+                        let dd = [dx[idx[0]], dx[idx[1]], dx[idx[2]], dx[idx[3]]];
+                        // Thickness: the pair's offset is the SUM of the two segments' radii
+                        // (`contact.cu:558`), so CCD stops them at surface contact, not centreline
+                        // contact.
+                        let off = self.edge_offset[ei as usize] + self.edge_offset[ej as usize];
+                        let toi =
+                            contact::accd_toi(&x0, &dd, off, MAX_T, REDUCTION, ccd_iters, |p| {
+                                let d = contact::segment_segment_distance(p[0], p[1], p[2], p[3]);
+                                d * d
+                            });
+                        t_self = t_self.min(toi / MAX_T);
+                    },
+                );
                 if full || t_self * max_disp <= allowed {
                     t = t.min(t_self);
                     break;
@@ -1865,20 +2092,85 @@ impl ImplicitSolver {
         let n = self.state.vertex_count();
         let ndof = 3 * n;
         let k = self.params.stiffness;
-        // Reserve from the PREVIOUS assembly's length + 1/4, never an element-count formula:
-        // how many faces carry a strain limit, how many hinges exist and how many contacts
-        // are active are all scene- and state-dependent. The measured hint is exact after the
-        // first assembly and self-corrects as contacts come and go; the quarter covers the
-        // inter-Newton growth (`curtain`: 20.7 M entries on the first, 27.7 M on the second).
-        // The first assembly still grows by doubling — a bounded ~1.5x transient.
+        // THE TRIPLET LIST IS NOT MATERIALISED. `trips` is a `csr::TripletSink`: entries are
+        // folded into a running CSR in bounded chunks as they are pushed, so the assembly's
+        // largest allocation is `TripletSink::CHUNK_MAX` entries (40 MB) whatever the scene
+        // pushes — instead of the whole list, which was the solver's ceiling above ~40 k cloth
+        // vertices. Measured on the male COL proxy, self-collision on, 12 steps: at 10 000
+        // cloth vertices 34 552 512 pushes needed a 67 108 864-entry `Vec` (**768 MB**) to
+        // produce a 1 073 145-nnz CSR of 8.2 MB — a 16.6x duplicate factor. The sink's doc
+        // comment carries the before/after table and the one numerics consequence.
         //
-        // A static formula was measured and was worse: it over-reserved `hang` by 3.7x
-        // (159.7 MB for 3.8 M entries) and `curtain` by 2.6x, and seeding only the first
-        // assembly from it inherited the same over-reservation on the step where the peak
-        // actually occurs (`hang` 216.9 MB vs 119.7 MB for the pure measured hint).
-        let prev = self.trips_hint.get();
-        let mut trips: Vec<crate::csr::Triplet> = Vec::with_capacity(prev + prev / 4);
+        // Two things this removes as well as the bytes:
+        //   * the Dirichlet `retain` — a whole extra pass over the list — is now a filter on
+        //     the CSR inside `finish`, which is exact, not approximate (every entry in a cell
+        //     shares the cell's keep/drop verdict);
+        //   * `fixed_hess_in` (`trips.blocks` / `trips.diagonal_blocks` below) makes one hash
+        //     probe per NON-ZERO instead of one per raw triplet, i.e. ~17x fewer.
+        //
+        // Still open, and still the right next step for the elastic half: `unified_assembler
+        // .rs` precomputes a union CSR sparsity plus per-row block offsets and gathers into
+        // fixed slots with no triplets at all (the CPU analogue of the reference's
+        // `FixedCSRMat`, `ppf-cts-gauge/docs/PORTING_solver_linalg.md:78-81`). It covers
+        // springs, membrane and shells only, whereas this function also assembles hinges, rod
+        // hinges, strain-limit faces, stitches and — the hard part — CONTACTS, whose stencil
+        // set changes every Newton iteration. The sink makes that a SPEED question rather than
+        // a memory one, which is why it is not being done here.
+        let mut sink = self.trips_buf.borrow_mut();
+        sink.begin(ndof);
         let mut grad = vec![0.0f32; ndof];
+        // Pinned vertices, up here because the Dirichlet drop now happens at PUSH time — in
+        // front of the sort, where the old `retain` effectively was. See `Asm`.
+        let pinned: Vec<bool> = (0..n).map(|i| self.state.inv_mass[i] <= 0.0).collect();
+
+        // Every `fixed_hess_in` block pair any consumer below will ask for, registered BEFORE
+        // the first push so the gather can ride along with it. Three consumers:
+        //   * the strain-limit barrier wants all pairs over each strain-limited face;
+        //   * the pin, pull and collider Rayleigh stiffnesses want each vertex's DIAGONAL block,
+        //     which is served by a dense array rather than by `slots` (see `Asm::diag`);
+        //   * the self-collision barrier wants all 16 pairs of each active stencil, which is
+        //     why the stencils are collected here rather than further down. They depend on `x`
+        //     alone, so hoisting cannot change them.
+        let sc_stencils = if self.params.self_collision {
+            self.self_collision_stencils(x)
+        } else {
+            Vec::new()
+        };
+        let want_diag = !self.pins.is_empty()
+            || !self.pulls.is_empty()
+            || (!self.colliders.is_empty() && self.params.contact_rayleigh);
+        let mut slots: std::collections::HashMap<(u32, u32), usize> =
+            std::collections::HashMap::with_capacity(
+                16 * sc_stencils.len() + 9 * self.sl_faces.len(),
+            );
+        for (el, _, _) in &self.sl_faces {
+            for &a in &el.v {
+                for &b in &el.v {
+                    let k = slots.len();
+                    slots.entry((a, b)).or_insert(k);
+                }
+            }
+        }
+        for (idx, _, _, _) in &sc_stencils {
+            for &a in idx {
+                for &b in idx {
+                    let k = slots.len();
+                    slots.entry((a as u32, b as u32)).or_insert(k);
+                }
+            }
+        }
+        let mut trips = Asm {
+            sink: &mut sink,
+            blocks: vec![[0.0f32; 9]; slots.len()],
+            diag: if want_diag {
+                vec![[0.0f32; 9]; n]
+            } else {
+                Vec::new()
+            },
+            slots: &slots,
+            pinned: &pinned,
+            pushed: 0,
+        };
 
         // Inertia: H += m_i/h² I ; grad += m_i/h² (x_i - x̃_i). Free vertices only;
         // pinned are handled by the Dirichlet filter below.
@@ -2243,19 +2535,7 @@ impl ImplicitSolver {
         // Supersedes the edge-spring path for the faces it covers.
         if !self.sl_faces.is_empty() {
             let kind = self.params.barrier_kind;
-            // Every (vi, vj) pair over every strain-limited face, so the elastic blocks can
-            // be gathered in a single pass.
-            let mut slots: std::collections::HashMap<(u32, u32), usize> =
-                std::collections::HashMap::with_capacity(9 * self.sl_faces.len());
-            for (el, _, _) in &self.sl_faces {
-                for &a in &el.v {
-                    for &b in &el.v {
-                        let n = slots.len();
-                        slots.entry((a, b)).or_insert(n);
-                    }
-                }
-            }
-            let blocks = Self::gather_elastic_blocks(&trips, &slots);
+            let blocks = trips.snapshot();
             for (el, limit, mass) in &self.sl_faces {
                 let vs = el.v;
                 let p = [x[vs[0] as usize], x[vs[1] as usize], x[vs[2] as usize]];
@@ -2317,13 +2597,7 @@ impl ImplicitSolver {
         // triplet assembled so far IS that elastic part, so its diagonal blocks are summed
         // once here, the same way the collider path does it.
         if !self.pins.is_empty() {
-            let mut diag = vec![[0.0f32; 9]; n];
-            for &(r, c, v) in trips.iter() {
-                let (r, c) = (r as usize, c as usize);
-                if r / 3 == c / 3 {
-                    diag[r / 3][3 * (r % 3) + (c % 3)] += v;
-                }
-            }
+            let diag = trips.diagonal_blocks(n);
             for pin in &self.pins {
                 let i = pin.index as usize;
                 if self.state.inv_mass[i] <= 0.0 {
@@ -2467,14 +2741,7 @@ impl ImplicitSolver {
             // elastic part (inertia + springs + membrane + bending), so sum the
             // diagonal blocks once — O(nnz) — rather than re-deriving them.
             let elastic_diag: Option<Vec<[f32; 9]>> = if self.params.contact_rayleigh {
-                let mut blocks = vec![[0.0f32; 9]; n];
-                for &(r, c, v) in trips.iter() {
-                    let (r, c) = (r as usize, c as usize);
-                    if r / 3 == c / 3 {
-                        blocks[r / 3][3 * (r % 3) + (c % 3)] += v;
-                    }
-                }
-                Some(blocks)
+                Some(trips.diagonal_blocks(n))
             } else {
                 None
             };
@@ -2536,97 +2803,26 @@ impl ImplicitSolver {
             }
         }
 
-        // Self-collision: vertex–triangle IPC barrier. Broad phase (spatial hash)
-        // → candidate pairs; per active pair, barrier on the point-triangle
-        // distance with FD gradient + Gauss-Newton (PSD) Hessian over the 4
-        // vertices. Couples them (grows sparsity; the triplet builder handles it).
-        if self.params.self_collision {
-            let dhat = self.params.contact_dhat;
-            // ---- pass 1: collect every active stencil, BOTH kinds ----
-            // The stiffness needs the elastic Hessian as the reference's `fixed_hess_in`:
-            // the elastic terms only, with NO contact contributions folded in. So all
-            // stencils are collected first and the blocks gathered ONCE, before either kind
-            // pushes a triplet — otherwise edge-edge would read vertex-triangle's barrier.
-            // Each stencil carries its own activation gap: the reference's `ghat` is
-            // per-element, composed as the MEAN of the two participants' (`contact.cu:721`),
-            // unlike `offset` which is a SUM. Face stencils use the scene-wide `dhat`.
-            let mut stencils: Vec<([usize; 4], f32, [Vec3; 4], f32)> = Vec::new();
-            for (v, ti) in crate::broadphase::vertex_triangle_pairs(
-                x,
-                &self.collision_tris,
-                dhat,
-                &self.exclusion,
-            ) {
-                let t = self.collision_tris[ti as usize];
-                let idx = [v as usize, t[0] as usize, t[1] as usize, t[2] as usize];
-                let (d, g) =
-                    contact::point_tri_distance_grad(x[idx[0]], x[idx[1]], x[idx[2]], x[idx[3]]);
-                // Keep only ACTIVE stencils. Both barriers return `None` for `d >= ghat`
-                // (`contact::barrier` line 639, `cubic_barrier` line 353) and friction is
-                // nested inside that `Some`, so an inactive stencil contributes no gradient,
-                // no Hessian and no friction — it only inflated `slots`/`blocks` below, which
-                // are sized at 16 entries PER STENCIL. On `fishingknot` the broadphase offers
-                // ~600 K candidates of which a few hundred are in contact, so this is a ~100x
-                // reduction in the number of stencils with an identical result.
-                //
-                // VERIFIED equivalent, not assumed: `domino` (252 active contacts) reaches
-                // frame 50 in 167 steps with max_rel 1.7801e-1 / rms 3.7437e-2 /
-                // centroid_rel 8.6935e-3 both with and without this filter — byte-identical.
-                // It is also a large SPEED win there (the unfiltered run does not finish
-                // inside 2 minutes), though only ~3% of the allocated bytes, because domino's
-                // real cost is the 17.3 M raw candidate pairs the CCD broadphase builds
-                // BEFORE this point — labelled B-1 in the internal audit notes.
-                if d >= dhat {
-                    continue;
-                }
-                stencils.push((idx, d, g, dhat));
-            }
-            // Thick rods touch when their centrelines are `2*offset + dhat` apart, so the
-            // edge-edge broad phase gets the widened radius. Zero for rod-free scenes.
-            let ee_search = self.max_edge_gap() + 2.0 * self.max_edge_offset();
-            for (ei, ej) in crate::broadphase::edge_edge_pairs(x, &self.edges, ee_search) {
-                let (ea, eb) = (self.edges[ei as usize], self.edges[ej as usize]);
-                let idx = [
-                    ea[0] as usize,
-                    ea[1] as usize,
-                    eb[0] as usize,
-                    eb[1] as usize,
-                ];
-                let (d, g) = contact::segment_segment_distance_grad(
-                    x[idx[0]], x[idx[1]], x[idx[2]], x[idx[3]],
-                );
-                // The reference's barrier acts on `g = ‖e‖ − offset` (`barrier.cu:103-116`)
-                // with the offset SUMMED over the two participants (`contact.cu:558`).
-                // Because `∂(d − offset)/∂x = ∂d/∂x`, subtracting it here is exact and the
-                // gradient/Hessian assembly below needs no change. Face edges carry offset
-                // 0, so cloth behaviour is untouched.
-                let off = self.edge_offset[ei as usize] + self.edge_offset[ej as usize];
-                let pair_ghat = 0.5 * (self.edge_gap(ei as usize) + self.edge_gap(ej as usize));
-                if d - off >= pair_ghat {
-                    continue; // inactive — see the vertex-triangle note above
-                }
-                stencils.push((idx, d - off, g, pair_ghat));
-            }
-
-            let mut slots: std::collections::HashMap<(u32, u32), usize> =
-                std::collections::HashMap::with_capacity(16 * stencils.len());
-            for (idx, _, _, _) in &stencils {
-                for &a in idx {
-                    for &b in idx {
-                        let n = slots.len();
-                        slots.entry((a as u32, b as u32)).or_insert(n);
-                    }
-                }
-            }
-            let blocks = Self::gather_elastic_blocks(&trips, &slots);
-
-            // ---- pass 2: assemble ----
-            for (idx, d, g, pair_ghat) in &stencils {
+        // Self-collision: vertex–triangle and edge–edge IPC barriers over the stencils
+        // collected BEFORE the elastic assembly (`self_collision_stencils`). Couples their
+        // vertices, which grows the sparsity; the accumulator handles it.
+        if !sc_stencils.is_empty() {
+            let blocks = trips.snapshot();
+            // ---- assemble ----
+            for (idx, d, g, pair_ghat) in &sc_stencils {
                 let (idx, d, g, pair_ghat) = (*idx, *d, *g, *pair_ghat);
                 let k = self.self_contact_rayleigh(&blocks, &slots, &idx, d, &g);
-                if let Some((_e, bg, bh)) =
-                    contact::barrier_of(self.params.barrier_kind, d, pair_ghat, k)
-                {
+                // Only a signed (static-body) stencil can report a negative gap, and the
+                // log barrier is undefined there — it clamps to a tiny positive distance
+                // and emits an unbounded force. The cubic barrier is the documented
+                // penetration-recovery branch: finite energy, bounded curvature, strictly
+                // stronger push-out the deeper the vertex is.
+                let kind = if d < 0.0 {
+                    contact::BarrierKind::Cubic
+                } else {
+                    self.params.barrier_kind
+                };
+                if let Some((_e, bg, bh)) = contact::barrier_of(kind, d, pair_ghat, k) {
                     let hp = bh.max(0.0);
                     for a in 0..4 {
                         for c in 0..3 {
@@ -2685,14 +2881,11 @@ impl ImplicitSolver {
         crate::alloc_stats::checkpoint("asm:constraints-done");
         let mut rhs: Vec<f32> = grad.iter().map(|&g| -g).collect();
 
-        // Dirichlet filter for pinned DOFs: drop their rows+cols (keeps symmetry),
-        // set unit diagonal, zero rhs → Δx = 0 there.
-        let pinned: Vec<bool> = (0..n).map(|i| self.state.inv_mass[i] <= 0.0).collect();
-        trips.retain(|&(r, c, _)| !pinned[r as usize / 3] && !pinned[c as usize / 3]);
+        // Dirichlet filter for pinned DOFs: `finish` drops their rows+cols (keeps symmetry)
+        // and sets a unit diagonal; the rhs is zeroed to match, so Δx = 0 there.
         for i in 0..n {
             if pinned[i] {
                 for c in 0..3 {
-                    trips.push(((3 * i + c) as u32, (3 * i + c) as u32, 1.0));
                     rhs[3 * i + c] = 0.0;
                 }
             }
@@ -2700,19 +2893,96 @@ impl ImplicitSolver {
 
         // `MGUSO_ASM_STATS=1`: the actual assembly sizes, so the memory profile is measured
         // rather than estimated. Built once and reported, not built twice.
-        self.trips_hint.set(trips.len());
-        let m = CsrMatrix::from_triplets(ndof, &trips);
+        let pushed = trips.pushed;
+        drop(trips);
+        self.trips_hint.set(pushed);
+        self.trips_cap.set(sink.chunk_capacity());
+        let m = sink.finish(&pinned);
+        let flushes = sink.flushes();
         if asm_stats() {
+            let ent = std::mem::size_of::<crate::csr::Triplet>();
             eprintln!(
-                "asm: ndof {ndof}  trips {} (cap {}, {:.1} MB)  csr nnz {} ({:.1} MB)",
-                trips.len(),
-                trips.capacity(),
-                (trips.capacity() * std::mem::size_of::<crate::csr::Triplet>()) as f64 / 1048576.0,
+                "asm: ndof {ndof}  pushed {pushed}  \
+                 chunk cap {} ({:.1} MB, {flushes} folds)  csr nnz {} ({:.1} MB)",
+                sink.chunk_capacity(),
+                (sink.chunk_capacity() * (ent + 8)) as f64 / 1048576.0,
                 m.nnz(),
                 (m.nnz() * 8) as f64 / 1048576.0,
             );
         }
         (m, rhs)
+    }
+}
+
+/// The assembly's push target: it fans each entry out to the two consumers the Hessian has, and
+/// it is why the Dirichlet drop can happen at PUSH time.
+///
+/// **Why this exists, measured.** The old code kept the whole triplet list, `retain`ed the
+/// Dirichlet rows out of it, and only THEN counting-sorted the survivors — so a scene whose
+/// element count is dominated by a static body sorted almost nothing. A 36-vertex patch on the
+/// 15 050-triangle male COL proxy pushes **6 767 765** entries of which **33 714** survive
+/// (200x), and moving the filter after the sort — as a first cut of the streaming accumulator
+/// did — cost 7x on `collision_proxy_step_cost` (0.054 -> 0.383 s/step, self-collision off).
+///
+/// So the filter is back in front of the sort. The only thing that needed the UNFILTERED
+/// Hessian was the reference's `fixed_hess_in` gather (`barrier::compute_stiffness`,
+/// `strainlimiting::compute_stiffness`), which reads a fixed set of `(vi, vj)` block pairs — and
+/// every one of those pairs is knowable before the first push, because the strain-limit faces
+/// are solver state and the contact stencils depend only on `x`. So `slots` is built up front
+/// and each push accumulates into its block on the way past, in PUSH ORDER, which makes the
+/// gather **bit-identical** to the pass it replaces rather than a re-association of it.
+struct Asm<'a> {
+    sink: &'a mut crate::csr::TripletSink,
+    /// `(vi, vj) -> index into `blocks``, every pair any consumer will ask for. Empty ⇒ no
+    /// consumer, and `push` skips the probe entirely.
+    slots: &'a std::collections::HashMap<(u32, u32), usize>,
+    /// Row-major 3×3 blocks of the UNFILTERED Hessian assembled so far, for `slots`' pairs.
+    blocks: Vec<[f32; 9]>,
+    /// Per-vertex DIAGONAL blocks, kept DENSE and out of `slots`. The pin, pull and collider
+    /// Rayleigh stiffnesses want one per vertex, and registering `n` more pairs in the hash map
+    /// cost 2.4x on `collision_proxy_step_cost` — it turned every diagonal push into a probe in
+    /// a map big enough to miss cache, where the pass it replaced used a bare `r / 3 == c / 3`.
+    /// Empty ⇒ no consumer.
+    diag: Vec<[f32; 9]>,
+    /// Indexed by VERTEX. A pinned vertex's rows and columns never enter the accumulator.
+    pinned: &'a [bool],
+    /// Pushes seen, including the ones `pinned` rejected — the diagnostic `trips_hint` keeps.
+    pushed: usize,
+}
+
+impl Asm<'_> {
+    #[inline]
+    fn push(&mut self, t: crate::csr::Triplet) {
+        let (r, c, v) = t;
+        let (ru, cu) = (r as usize, c as usize);
+        self.pushed += 1;
+        if !self.diag.is_empty() && ru / 3 == cu / 3 {
+            self.diag[ru / 3][3 * (ru % 3) + (cu % 3)] += v;
+        }
+        if !self.slots.is_empty() {
+            if let Some(&slot) = self.slots.get(&(r / 3, c / 3)) {
+                self.blocks[slot][3 * (ru % 3) + (cu % 3)] += v;
+            }
+        }
+        if !self.pinned[ru / 3] && !self.pinned[cu / 3] {
+            self.sink.push(t);
+        }
+    }
+
+    /// The gathered blocks as they stand. A snapshot, because the consumers read them while
+    /// still pushing (the strain-limit barrier reads the elastic Hessian and then adds to it).
+    fn snapshot(&self) -> Vec<[f32; 9]> {
+        self.blocks.clone()
+    }
+
+    /// Per-vertex DIAGONAL blocks — the special case the pin, pull and collider Rayleigh
+    /// stiffnesses want. A clone, because the consumers read them while still pushing.
+    fn diagonal_blocks(&self, verts: usize) -> Vec<[f32; 9]> {
+        debug_assert!(
+            self.diag.len() == verts,
+            "diagonal gather was not requested"
+        );
+        self.diag.clone()
     }
 }
 
@@ -3465,6 +3735,154 @@ mod tests {
     use crate::geometry::Mesh;
     use crate::linsolve::CgCpu;
     use approx::assert_relative_eq;
+
+    /// The triplet `Vec` must be reserved from the count it actually HOLDS, not the count
+    /// that survives the Dirichlet retain. A body proxy arrives static, so most of a real
+    /// scene's triplets are pushed and dropped; reserving for the survivors guaranteed a
+    /// doubling every assembly and the doubling overshot — measured at V=30 394, capacity
+    /// 44 263 932 (506.6 MB) for 17 711 693 live entries, ratcheting 8 388 608 ->
+    /// 14 114 728 -> 20 948 412 across one step's three Newton iterations.
+    ///
+    /// This fixture is that shape in miniature: half the sheet pinned, three Newton
+    /// iterations, so the ratchet reproduces.
+    #[test]
+    fn triplet_reserve_is_sized_from_what_the_vec_holds() {
+        let (nx, nz) = (14usize, 14usize);
+        let mut verts = Vec::new();
+        for j in 0..nz {
+            for i in 0..nx {
+                verts.push(Vec3::new(i as f32 * 0.05, 1.0, j as f32 * 0.05));
+            }
+        }
+        let mut tris = Vec::new();
+        for j in 0..nz - 1 {
+            for i in 0..nx - 1 {
+                let v = (j * nx + i) as u32;
+                let r = v + nx as u32;
+                tris.push([v, v + 1, r]);
+                tris.push([r, v + 1, r + 1]);
+            }
+        }
+        let mut state = SimState::from_mesh(&Mesh::new(verts, tris), 0.02);
+        for j in 0..nz / 2 {
+            for i in 0..nx {
+                state.pin(j * nx + i); // the "static body" half
+            }
+        }
+        let mut solver = ImplicitSolver::new(
+            state,
+            ImplicitParams {
+                newton_iters: 3,
+                ..Default::default()
+            },
+        );
+        for s in 0..3 {
+            solver.step(&CgCpu::new());
+            let (hint, cap) = (solver.trips_hint.get(), solver.trips_cap.get());
+            assert!(hint > 0, "step {s}: nothing assembled — fixture is broken");
+            assert!(
+                cap <= 2 * hint,
+                "step {s}: triplet Vec reserved {cap} for {hint} pushed entries \
+                 ({:.2}x) — the hint is being taken from the wrong quantity",
+                cap as f64 / hint as f64
+            );
+        }
+    }
+
+    /// **The footprint guard.** One step of a cloth sheet over a static mesh collider must
+    /// not allocate more than a bounded number of bytes per cloth vertex.
+    ///
+    /// This is the test that was missing while the solver's real ceiling went undiagnosed for
+    /// three sessions, and it is written on PEAK LIVE BYTES rather than on wall clock or on
+    /// `/usr/bin/time -l` because those are the two instruments that failed:
+    ///
+    /// * `tools/perf-baseline.tsv` times one step with tolerance 4.0, which cannot see a
+    ///   footprint change at all;
+    /// * peak RSS is a process high-water mark, so it cannot be asserted inside a test
+    ///   harness that runs other tests concurrently.
+    ///
+    /// The bound is per-vertex and generous — this is a STRUCTURAL guard, like the rest of
+    /// this project's perf gates. It fires when something starts materialising a list whose
+    /// length is a pair count rather than a vertex count, and it does not pretend to catch
+    /// 20%.
+    ///
+    /// **What this fixture does NOT catch, stated because a guard whose reach is unmeasured
+    /// is worse than none.** The regression that motivated it — the CCD line search
+    /// COLLECTING its candidate pair list once per widening pass, which at 20 164 cloth
+    /// vertices took a 12-step drape to peak live 4 153.2 MB and maximum RSS 4 794 105 856 B
+    /// — reads **3 695 B/vertex here either way**, measured by reverting the change. This
+    /// sheet is too small and too slow for the widening loop to run more than once, and
+    /// raising its velocity to 12 m/s did not move the number.
+    ///
+    /// **Nor does anything else.** `broadphase::tests::
+    /// streaming_candidates_do_not_allocate_per_pair` pins the broadphase primitive, not that
+    /// this solver calls it, and reverting these two call sites leaves it green too — see the
+    /// note in that test for why no cheap test can. This one is the whole-step ceiling, and
+    /// what it would catch is the triplet list or the CSR going superlinear in vertices.
+    #[test]
+    fn one_step_footprint_is_bounded() {
+        // 40x40 sheet dropped onto a pinned 40x40 floor: a real static mesh collider, and
+        // enough cloth that a pair-count-sized allocation would dwarf a vertex-count-sized
+        // one.
+        let k = 40usize;
+        let grid = |y: f32, off: u32| {
+            let mut v = Vec::new();
+            let mut t = Vec::new();
+            for j in 0..k {
+                for i in 0..k {
+                    v.push(Vec3::new(i as f32 * 0.02, y, j as f32 * 0.02));
+                }
+            }
+            for j in 0..k - 1 {
+                for i in 0..k - 1 {
+                    let a = off + (j * k + i) as u32;
+                    let b = a + k as u32;
+                    t.push([a, a + 1, b]);
+                    t.push([b, a + 1, b + 1]);
+                }
+            }
+            (v, t)
+        };
+        let (mut verts, mut tris) = grid(0.30, 0);
+        let ncloth = verts.len();
+        let (bv, bt) = grid(0.0, ncloth as u32);
+        verts.extend(bv);
+        tris.extend(bt);
+        let nall = verts.len();
+        let mut state = SimState::from_mesh(&Mesh::new(verts, tris), 0.02);
+        for i in ncloth..nall {
+            state.pin(i);
+        }
+        let mut solver = ImplicitSolver::new(
+            state,
+            ImplicitParams {
+                dt: 1.0 / 120.0,
+                self_collision: true,
+                newton_iters: 3,
+                ..Default::default()
+            },
+        );
+
+        // Warm the reusable buffers (`trips_buf`) so the measured step is a steady-state one,
+        // then measure the NEXT step alone.
+        solver.step(&CgCpu::new());
+        crate::alloc_stats::reset_thread_peak();
+        let before = crate::alloc_stats::thread_peak_bytes();
+        solver.step(&CgCpu::new());
+        let peak = crate::alloc_stats::thread_peak_bytes();
+        assert!(
+            peak > before,
+            "the tracking allocator is not feeding alloc_stats — the guard is vacuous"
+        );
+        let per_vertex = (peak - before) as f64 / ncloth as f64;
+        // Measured 2026-08-04 on this fixture: 3 695 B/cloth vertex. 8 KB is 2.2x that.
+        assert!(
+            per_vertex < 8192.0,
+            "one step peaked at {per_vertex:.0} B per cloth vertex ({} B over {ncloth} \
+             vertices) — something is allocating per candidate PAIR, not per vertex",
+            peak - before
+        );
+    }
 
     #[test]
     fn nan_guard_rejects_bad_step() {
@@ -5668,7 +6086,7 @@ mod tests {
         );
     }
 
-    /// `gather_elastic_blocks` must reproduce OFF-DIAGONAL blocks, not just diagonal ones,
+    /// `TripletSink::blocks` must reproduce OFF-DIAGONAL blocks, not just diagonal ones,
     /// place each entry at the right row/column within its block, accumulate duplicate
     /// triplets, and ignore pairs that were not requested. Getting the transpose or the
     /// row/column order wrong here would silently corrupt every dynamic stiffness.
@@ -5697,7 +6115,21 @@ mod tests {
             (9, 9, 100.0),
             (3, 6, 100.0),
         ];
-        let b = ImplicitSolver::gather_elastic_blocks(&trips, &slots);
+        let mut sink = crate::csr::TripletSink::new();
+        sink.begin(12);
+        let pinned = [false; 4];
+        let mut asm = Asm {
+            sink: &mut sink,
+            blocks: vec![[0.0f32; 9]; slots.len()],
+            diag: Vec::new(),
+            slots: &slots,
+            pinned: &pinned,
+            pushed: 0,
+        };
+        for &t in &trips {
+            asm.push(t);
+        }
+        let b = asm.snapshot();
         assert_eq!(b.len(), 4);
         // Blocks are row-major 3×3; name the (row, col) so the intent stays legible.
         let at = |r: usize, c: usize| 3 * r + c;
@@ -6682,6 +7114,496 @@ mod tests {
         let (_f2, pos_again) = run(0.0);
         for (i, (a, b)) in pos_free.iter().zip(&pos_again).enumerate() {
             assert_eq!(a.to_array(), b.to_array(), "vertex {i} not deterministic");
+        }
+    }
+}
+
+/// The **static mesh collider** (`memory/DECISIONS.md` D-17): a body mesh rides into the
+/// scene as immovable geometry and cloth collides against it through the vertex–triangle
+/// contact pass, which never tests immovable-vs-immovable pairs
+/// ([`crate::broadphase::any_movable`]).
+///
+/// The oracle is the analytic collider. A plane built out of triangles must behave like
+/// [`Collider::HalfSpace`] and a sphere built out of triangles like [`Collider::Sphere`] —
+/// same resting height, same non-penetration — because that is the one case where the
+/// right answer is known independently of the code under test.
+///
+/// The body is declared through [`ImplicitSolver::set_static_collider_verts`], which is
+/// what makes its contact gap SIGNED. Being immovable is not enough and never was: a fully
+/// pinned cloth sheet is immovable too, and it has no inside.
+#[cfg(test)]
+mod static_mesh_collider_tests {
+    use super::*;
+    use crate::geometry::Mesh;
+    use crate::linsolve::CgCpu;
+
+    /// An `n`×`n` triangulated square in the plane `y = y0`, spanning `[-half, half]²`.
+    fn plane_mesh(n: usize, y0: f32, half: f32) -> (Vec<Vec3>, Vec<[u32; 3]>) {
+        let (mut pos, mut tris) = (Vec::new(), Vec::new());
+        let step = 2.0 * half / (n - 1) as f32;
+        for j in 0..n {
+            for i in 0..n {
+                pos.push(Vec3::new(
+                    -half + i as f32 * step,
+                    y0,
+                    -half + j as f32 * step,
+                ));
+            }
+        }
+        for j in 0..n - 1 {
+            for i in 0..n - 1 {
+                let v = (j * n + i) as u32;
+                let r = v + n as u32;
+                tris.push([v, v + 1, r]);
+                tris.push([r, v + 1, r + 1]);
+            }
+        }
+        (pos, tris)
+    }
+
+    /// The same plane wound so every triangle normal points **+Y**, i.e. away from the
+    /// solid below it. A mesh collider's winding is not decoration: it is what tells the
+    /// contact barrier which side is outside, the same role glTF's counter-clockwise-front
+    /// convention plays for the avatar proxies. `plane_mesh`'s own winding is −Y, which is
+    /// irrelevant for a cloth patch (its contact is unsigned) and wrong for a floor.
+    /// Oriented by measurement, not by a hand-computed cross product.
+    fn floor_mesh(n: usize, y0: f32, half: f32) -> (Vec<Vec3>, Vec<[u32; 3]>) {
+        let (pos, tris) = plane_mesh(n, y0, half);
+        let tris = tris
+            .into_iter()
+            .map(|t| {
+                let (a, b, c) = (pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]);
+                if (b - a).cross(c - a).y > 0.0 {
+                    t
+                } else {
+                    [t[0], t[2], t[1]]
+                }
+            })
+            .collect();
+        (pos, tris)
+    }
+
+    /// A UV-sphere of radius `r` centred at `c`. Coarse on purpose: a collider proxy is
+    /// always a coarse stand-in for a smooth surface, and the test has to tolerate that.
+    fn sphere_mesh(c: Vec3, r: f32, seg: usize, rings: usize) -> (Vec<Vec3>, Vec<[u32; 3]>) {
+        let (mut pos, mut tris) = (Vec::new(), Vec::new());
+        for ri in 0..=rings {
+            let phi = std::f32::consts::PI * ri as f32 / rings as f32;
+            for si in 0..seg {
+                let th = std::f32::consts::TAU * si as f32 / seg as f32;
+                pos.push(c + r * Vec3::new(phi.sin() * th.cos(), phi.cos(), phi.sin() * th.sin()));
+            }
+        }
+        for ri in 0..rings {
+            for si in 0..seg {
+                let a = (ri * seg + si) as u32;
+                let b = (ri * seg + (si + 1) % seg) as u32;
+                let (c2, d) = (a + seg as u32, b + seg as u32);
+                tris.push([a, b, c2]);
+                tris.push([c2, b, d]);
+            }
+        }
+        (pos, tris)
+    }
+
+    /// A `k`×`k` cloth patch at height `y0`, centred on the origin, spanning `±extent`.
+    fn cloth(k: usize, y0: f32, extent: f32) -> (Vec<Vec3>, Vec<[u32; 3]>) {
+        let (mut p, t) = plane_mesh(k, y0, extent);
+        for q in p.iter_mut() {
+            q.y = y0;
+        }
+        (p, t)
+    }
+
+    const DHAT: f32 = 0.02;
+    const KAPPA: f32 = 2.0e3;
+    const STEPS: usize = 400;
+
+    fn params(self_collision: bool) -> ImplicitParams {
+        ImplicitParams {
+            dt: 1.0 / 240.0,
+            stiffness: 500.0,
+            gravity: Vec3::new(0.0, -9.8, 0.0),
+            contact_dhat: DHAT,
+            contact_kappa: KAPPA,
+            self_collision,
+            ..Default::default()
+        }
+    }
+
+    /// Drop `cloth` onto `body` (a static mesh) and return the settled cloth vertices.
+    /// The body is appended AFTER the cloth and every one of its vertices is pinned, which
+    /// is exactly how `engine_api::Scene` lowers an `Object { is_static: true, .. }`.
+    fn drop_on_mesh(
+        cloth: &(Vec<Vec3>, Vec<[u32; 3]>),
+        body: &(Vec<Vec3>, Vec<[u32; 3]>),
+    ) -> Vec<Vec3> {
+        let ncloth = cloth.0.len();
+        let mut pos = cloth.0.clone();
+        let mut tris = cloth.1.clone();
+        pos.extend_from_slice(&body.0);
+        tris.extend(body.1.iter().map(|t| {
+            [
+                t[0] + ncloth as u32,
+                t[1] + ncloth as u32,
+                t[2] + ncloth as u32,
+            ]
+        }));
+        let mut state = SimState::from_mesh(&Mesh::new(pos, tris), 0.02);
+        for i in ncloth..state.vertex_count() {
+            state.pin(i);
+        }
+        let nverts = state.vertex_count();
+        let mut solver = ImplicitSolver::new(state, params(true));
+        // The body is a static mesh collider, which is what `Scene::build_implicit` says
+        // for an `is_static` object and what makes its contact gap signed.
+        let mut collider = vec![false; nverts];
+        collider[ncloth..].fill(true);
+        solver.set_static_collider_verts(&collider);
+        for _ in 0..STEPS {
+            solver.step(&CgCpu::new());
+        }
+        solver.state.positions[..ncloth].to_vec()
+    }
+
+    /// Drop the same cloth onto an analytic collider — the oracle.
+    fn drop_on_analytic(cloth: &(Vec<Vec3>, Vec<[u32; 3]>), c: Collider) -> Vec<Vec3> {
+        let state = SimState::from_mesh(&Mesh::new(cloth.0.clone(), cloth.1.clone()), 0.02);
+        let mut solver = ImplicitSolver::new(state, params(false));
+        solver.set_colliders(vec![c]);
+        for _ in 0..STEPS {
+            solver.step(&CgCpu::new());
+        }
+        solver.state.positions.clone()
+    }
+
+    fn mean_y(p: &[Vec3]) -> f32 {
+        p.iter().map(|q| q.y).sum::<f32>() / p.len() as f32
+    }
+    fn min_y(p: &[Vec3]) -> f32 {
+        p.iter().map(|q| q.y).fold(f32::INFINITY, f32::min)
+    }
+
+    /// **The correctness oracle.** A plane made of triangles must stop the cloth where
+    /// `Collider::HalfSpace` stops it.
+    ///
+    /// The tolerance is one `dhat`, and it is a real bound rather than a rubber stamp: the
+    /// two paths reach contact through genuinely different machinery (the analytic barrier
+    /// acts on a SIGNED half-space distance with a per-vertex step clamp; the mesh barrier
+    /// acts on the UNSIGNED point–triangle distance of a 4-vertex stencil with the
+    /// reference's Rayleigh stiffness), so agreeing to within the activation gap itself is
+    /// the strongest claim the two share. The floors below are what stop it passing
+    /// vacuously — the cloth must actually have fallen, and neither run may penetrate.
+    ///
+    /// **Parameterised over the sign of `start`** — see
+    /// `a_triangulated_plane_recovers_from_initial_penetration_like_the_analytic_one`,
+    /// which is the half of the state space this test used to leave untested.
+    #[test]
+    fn a_triangulated_plane_matches_the_analytic_half_space() {
+        plane_matches_analytic_half_space_from(0.25);
+    }
+
+    /// The same scene started on the **wrong side** of the plane. Every offset here is
+    /// smaller than the positional noise of a 25 k-vertex faceted avatar proxy, so this is
+    /// an ordinary input, not an exotic one.
+    ///
+    /// With the mesh collider's point-triangle distance UNSIGNED, this run ended at mean
+    /// y **-18.43** (measured, 400 steps, start -10 um): the barrier's gradient points away
+    /// from the surface on whichever side the vertex already is, so it drove the cloth down
+    /// forever — silently, with no non-finite value to trip on. The analytic half-space,
+    /// whose distance is signed, recovers all the way to +0.0192 from the same start.
+    ///
+    /// **What is asserted, and what is not.** The signed gap arrests the cloth AT the
+    /// surface; it does not float it back to the analytic run's resting height. Measured
+    /// after the fix: mean/min y = -0.00272 / -0.00552 from -10 um, -0.00373 / -0.00632
+    /// from -100 um, -0.00305 / -0.00487 from -1 mm — it settles a few millimetres inside,
+    /// inside the barrier's own activation gap, and stays there. Two reasons it stops
+    /// there rather than popping out, both measured rather than assumed:
+    ///
+    /// * the log barrier is only reachable at a positive gap, so the last few hundred
+    ///   micrometres are climbed by the cubic barrier alone, against the Rayleigh
+    ///   stiffness's `m/gap²` wall;
+    /// * the edge-edge terms against the static proxy are unsigned and brake the climb.
+    ///   Making them stand aside DOES complete the recovery (mean +4.9e-5 from -10 um,
+    ///   measured) but it costs real support on a curved body — the female crown drops
+    ///   from 1.9066 to 1.8988 against a floor of 1.8990, and signing them instead is
+    ///   worse still (1.8858). Cloth resting on a faceted proxy is routinely a hair inside
+    ///   a facet, so any rule keyed on "inside" fires during ordinary contact. Left alone
+    ///   deliberately; see `engine-api/tests/avatar_bundle.rs`.
+    ///
+    /// So the assertion is the one the fix actually earns: the cloth is arrested in barrier
+    /// contact with the plane instead of falling through it. The free-fall control at the
+    /// end is what stops that passing vacuously.
+    #[test]
+    fn a_triangulated_plane_recovers_from_initial_penetration_like_the_analytic_one() {
+        for start in [-0.00001f32, -0.0001, -0.001] {
+            let patch = cloth(5, start, 0.2);
+            let mesh = drop_on_mesh(&patch, &floor_mesh(9, 0.0, 0.6));
+            assert!(
+                mesh.iter().all(|p| p.is_finite()),
+                "non-finite positions from start {start}"
+            );
+            let (my, ny) = (mean_y(&mesh), min_y(&mesh));
+            // In contact with the plane, on either side of it by less than the barrier's
+            // activation gap — not dropped through, which is metres rather than
+            // millimetres, and not launched off.
+            assert!(
+                ny > -DHAT && my < DHAT,
+                "start {start}: cloth is not in barrier contact with the plane — mean y \
+                 {my}, min y {ny} (allowed |y| < dhat {DHAT})"
+            );
+        }
+        // The floor: the same cloth with nothing under it. If this did not fall metres,
+        // the assertions above would be measuring a solver that simply did not move.
+        let free = drop_on_analytic(
+            &cloth(5, -0.00001, 0.2),
+            Collider::HalfSpace {
+                point: Vec3::new(0.0, -1000.0, 0.0),
+                normal: Vec3::Y,
+            },
+        );
+        assert!(
+            min_y(&free) < -1.0,
+            "the unobstructed control only fell to {} — the test is not discriminating",
+            min_y(&free)
+        );
+    }
+
+    fn plane_matches_analytic_half_space_from(start: f32) {
+        let patch = cloth(5, start, 0.2);
+        let mesh = drop_on_mesh(&patch, &floor_mesh(9, 0.0, 0.6));
+        let analytic = drop_on_analytic(
+            &patch,
+            Collider::HalfSpace {
+                point: Vec3::ZERO,
+                normal: Vec3::Y,
+            },
+        );
+
+        assert!(
+            mesh.iter().all(|p| p.is_finite()) && analytic.iter().all(|p| p.is_finite()),
+            "non-finite positions"
+        );
+        let (my, ay) = (mean_y(&mesh), mean_y(&analytic));
+        // Floor 1: both runs must actually have fallen most of the way. Without this the
+        // comparison would pass for two solvers that both did nothing.
+        for (label, y) in [("mesh", my), ("analytic", ay)] {
+            assert!(
+                y < 0.5 * start,
+                "{label} cloth did not fall: mean y {y} from {start}"
+            );
+        }
+        // Floor 2: neither may sink through. `dhat` of slack, matching the barrier's own
+        // activation gap.
+        assert!(
+            min_y(&mesh) > -DHAT && min_y(&analytic) > -DHAT,
+            "penetration from start {start}: mesh min y {}, analytic min y {}",
+            min_y(&mesh),
+            min_y(&analytic)
+        );
+        assert!(
+            (my - ay).abs() < DHAT,
+            "a triangulated plane must rest the cloth like the analytic half-space \
+             (start {start}): mesh {my} vs analytic {ay} (tolerance {DHAT})"
+        );
+    }
+
+    /// The signed path is opt-in AND checked. Three cases, because each one silently
+    /// wrecks a different scene if it is got wrong: an outward-wound closed proxy must be
+    /// accepted, an INWARD-wound one must be rejected (it would suck cloth in — worse than
+    /// the bug the sign fixes), and an open flat collider must still be accepted, since a
+    /// sheet has no volume to judge and the D-17 oracle's floor is exactly that.
+    #[test]
+    fn an_inward_wound_collider_is_rejected_rather_than_inverting_contact() {
+        let cube = |flip: bool| {
+            let (lo, hi) = (-0.5f32, 0.5f32);
+            let pos: Vec<Vec3> = [
+                (lo, lo, lo),
+                (hi, lo, lo),
+                (hi, lo, hi),
+                (lo, lo, hi),
+                (lo, hi, lo),
+                (hi, hi, lo),
+                (hi, hi, hi),
+                (lo, hi, hi),
+            ]
+            .iter()
+            .map(|&(x, y, z)| Vec3::new(x, y, z))
+            .collect();
+            // Outward-wound (verified numerically below, not by hand).
+            let mut tris: Vec<[u32; 3]> = vec![
+                [0, 1, 2],
+                [0, 2, 3],
+                [4, 7, 6],
+                [4, 6, 5],
+                [0, 4, 5],
+                [0, 5, 1],
+                [2, 6, 7],
+                [2, 7, 3],
+                [0, 3, 7],
+                [0, 7, 4],
+                [1, 5, 6],
+                [1, 6, 2],
+            ];
+            let vol: f32 = tris
+                .iter()
+                .map(|t| {
+                    pos[t[0] as usize]
+                        .cross(pos[t[1] as usize])
+                        .dot(pos[t[2] as usize])
+                        / 6.0
+                })
+                .sum();
+            assert!(vol > 0.9, "fixture is not outward-wound: volume {vol}");
+            if flip {
+                for t in tris.iter_mut() {
+                    t.swap(1, 2);
+                }
+            }
+            (pos, tris)
+        };
+
+        let build = |body: (Vec<Vec3>, Vec<[u32; 3]>)| {
+            let n = body.0.len();
+            let mut state = SimState::from_mesh(&Mesh::new(body.0, body.1), 0.02);
+            for i in 0..n {
+                state.pin(i);
+            }
+            let mut solver = ImplicitSolver::new(state, params(true));
+            solver.set_static_collider_verts(&vec![true; n]);
+            !solver.static_collider_vert.is_empty()
+        };
+
+        assert!(
+            build(cube(false)),
+            "an outward-wound proxy must be accepted"
+        );
+        assert!(
+            !build(cube(true)),
+            "an inward-wound proxy must be rejected — signing against it inverts every \
+             contact and pulls cloth into the body"
+        );
+        assert!(
+            build(floor_mesh(3, 0.0, 0.5)),
+            "a flat open collider has no volume to judge; the caller's winding must stand"
+        );
+    }
+
+    /// On a CURVED proxy the analytic twin is deliberately NOT used as the oracle. The two
+    /// disagreed by 0.0222 against a facet-sagitta bound of 0.0217 (measured), and the
+    /// residue is real physics — the polar facets of a UV sphere are degenerate, so the
+    /// surface the cloth actually rests on there is a flat cap, not a sphere. Tuning the
+    /// tolerance until that passed would have produced a test that asserts a fudge factor.
+    ///
+    /// So the claim here is the one the barrier itself makes, which needs no fudge: the
+    /// settled cloth is in RESTING CONTACT with the proxy — nowhere further than `dhat`
+    /// from its surface (not floating) and nowhere inside it (not penetrating). The
+    /// distance is measured with `contact::point_triangle_distance`, which the broad-phase
+    /// filter under test does not touch.
+    #[test]
+    fn cloth_rests_in_barrier_contact_with_a_curved_static_proxy() {
+        let (c, r) = (Vec3::ZERO, 0.2f32);
+        let body = sphere_mesh(c, r, 24, 12);
+        let settled = drop_on_mesh(&cloth(5, 0.45, 0.06), &body);
+        assert!(
+            settled.iter().all(|p| p.is_finite()),
+            "non-finite positions"
+        );
+        assert!(
+            mean_y(&settled) < 0.35,
+            "the cloth never reached the proxy: mean y {}",
+            mean_y(&settled)
+        );
+
+        // Distance from each cloth vertex to the proxy SURFACE.
+        let to_surface = |p: Vec3| {
+            body.1
+                .iter()
+                .map(|t| {
+                    contact::point_triangle_distance(
+                        p,
+                        body.0[t[0] as usize],
+                        body.0[t[1] as usize],
+                        body.0[t[2] as usize],
+                    )
+                })
+                .fold(f32::INFINITY, f32::min)
+        };
+        let nearest = settled
+            .iter()
+            .map(|&p| to_surface(p))
+            .fold(f32::INFINITY, f32::min);
+        // The resting gap of a MESH collider is not `dhat`: contact is resolved between
+        // 4-vertex stencils, so a cloth vertex over the middle of a proxy facet is held off
+        // by `dhat` from that facet's VERTICES, which is further from its plane. The bound
+        // is therefore `dhat` plus the proxy's own largest facet extent — derived from the
+        // mesh rather than tuned, and still tight enough to catch cloth that never landed
+        // (measured gap 0.033 against a bound of 0.072).
+        let facet = body
+            .1
+            .iter()
+            .map(|t| {
+                let (a, b, c2) = (
+                    body.0[t[0] as usize],
+                    body.0[t[1] as usize],
+                    body.0[t[2] as usize],
+                );
+                let d = a.max(b).max(c2) - a.min(b).min(c2);
+                d.x.max(d.y).max(d.z)
+            })
+            .fold(0.0f32, f32::max);
+        assert!(
+            nearest <= DHAT + facet,
+            "the cloth is floating: nearest vertex is {nearest} from the proxy, bound is \
+             {} (dhat {DHAT} + largest facet extent {facet})",
+            DHAT + facet
+        );
+        // Not inside. The proxy's facets are chords of the sphere, so its own surface dips
+        // below radius `r` by the sagitta — that, and only that, is the slack allowed.
+        let sag = r * (1.0 - (std::f32::consts::PI / 24.0).cos());
+        let closest_radius = settled
+            .iter()
+            .map(|p| (*p - c).length())
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            closest_radius > r - sag,
+            "cloth penetrated the proxy: closest vertex at radius {closest_radius}, \
+             proxy surface no lower than {} (r {r} − sagitta {sag})",
+            r - sag
+        );
+    }
+
+    /// Integration: a static body mesh is steppable, keeps the cloth out of itself, and is
+    /// bit-for-bit deterministic. The determinism check is the one that would catch a
+    /// broad-phase whose candidate ORDER depends on hash iteration order — which is
+    /// exactly what the movable filter touches.
+    #[test]
+    fn cloth_on_a_static_body_mesh_is_finite_outside_and_deterministic() {
+        let body = sphere_mesh(Vec3::new(0.0, 0.0, 0.0), 0.2, 20, 10);
+        let patch = cloth(5, 0.45, 0.06);
+        let a = drop_on_mesh(&patch, &body);
+        let b = drop_on_mesh(&patch, &body);
+        assert!(a.iter().all(|p| p.is_finite()), "non-finite positions");
+        assert!(
+            mean_y(&a) < 0.35,
+            "the cloth never reached the body: mean y {}",
+            mean_y(&a)
+        );
+        // Outside the body: every cloth vertex at least `dhat` clear of the sphere, less
+        // the faceting sagitta the proxy legitimately introduces.
+        let sag = 0.2 * (1.0 - (std::f32::consts::PI / 20.0).cos());
+        let worst = a.iter().map(|p| p.length()).fold(f32::INFINITY, f32::min);
+        assert!(
+            worst > 0.2 - DHAT - sag,
+            "cloth penetrated the body proxy: closest vertex at radius {worst}, \
+             body radius 0.2 (dhat {DHAT}, sagitta {sag})"
+        );
+        for (i, (p, q)) in a.iter().zip(&b).enumerate() {
+            assert_eq!(
+                p.to_array(),
+                q.to_array(),
+                "vertex {i}: same input must give identical positions"
+            );
         }
     }
 }

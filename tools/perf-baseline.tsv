@@ -1,0 +1,130 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Performance baseline for `tools/profile.sh` (`make profile` / `make profile-check`).
+#
+# Format, tab-separated:  metric  unit  baseline  tolerance  tier  what
+#   tolerance = the factor by which `measured / baseline` may grow before
+#   `--check` calls it a REGRESSION. It is NOT a target; it is a noise floor.
+#
+# ---------------------------------------------------------------------------
+# HARDWARE THESE NUMBERS WERE MEASURED ON  (re-measure, never copy, on new HW)
+# ---------------------------------------------------------------------------
+#   host      Apple M4 (`sysctl machdep.cpu.brand_string`), macOS 26.5.2
+#             build 25F84 (`sw_vers`), Darwin 25.5.0, arm64
+#   gpu       "Apple M4 · Metal · IntegratedGpu", unified memory, no discrete
+#             GPU — the adapter string handoff_bench.rs itself printed
+#   toolchain rustc 1.96.0 (ac68faa20 2026-05-25), --release, CARGO_INCREMENTAL
+#             unset
+#   date      2026-08-03 for every row EXCEPT `proxy_step_s_selfcol_{on,off}`,
+#             which were re-baselined 2026-08-04 and re-verified later the same
+#             day. Per-row dates and loads are stated in each row's own text —
+#             read the row, not this block.
+#   load      NOT an idle machine: other agents were compiling Rust throughout,
+#             so several of these are busy-machine numbers. That is the safe
+#             direction for a guard (real cost <= recorded), and it is also why
+#             the spreads below are as wide as they are.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS FILE DOES NOT COVER — read before assuming a number is guarded
+# ---------------------------------------------------------------------------
+#   * MEMORY. Not one row here measures memory, and the biggest performance
+#     result of 2026-08-04 was a memory result (70k-vertex garment 6.4-8.6 GB
+#     projected -> 2.70 GiB actual, `DECISIONS.md` D-21). Those figures are at
+#     the bottom of this file, UNGUARDED, with the exact command that produced
+#     them. `make profile` cannot see a regression that doubles peak RSS.
+#   * FRAME TIME. Deliberately, forever — see the bottom of this file.
+#   * ASSET LOAD TIME. Measured, no headless entry point, so no row.
+#   * ANYTHING NEEDING `samples/`. That tree is gitignored (`.gitignore:45`,
+#     352 MB, third-party), so no CI runner can ever see it. Every garment-corpus
+#     number in `DECISIONS.md` D-20/D-22 is therefore a local measurement that
+#     nothing re-checks. Do not add a row for one.
+#
+# ---------------------------------------------------------------------------
+# WHY THE TOLERANCES ARE WIDE
+# ---------------------------------------------------------------------------
+# Every number here is wall clock, and the observed spread is large:
+#   * the blocking handoff was reported earlier this session as spanning
+#     4.6 -> 9.4 across four runs of one unchanged binary (2.05x, from nothing
+#     but scheduling). Independently re-measured here five times at 100k verts:
+#     2.885 / 3.449 / 3.580 / 3.764 / 3.871 ms = 1.34x;
+#   * `mguso bench` gave 20.95 / 24.82 / 26.99 / 28.48 ms/step on four
+#     back-to-back runs — 1.36x;
+#   * nguo-registry's start+done spanned 65.4 to 131.7 ns/op over eight runs
+#     (2.01x), and in one of them the strictly-more-work variant
+#     (start+progress+done, 82.6 ns) came out FASTER than start+done
+#     (131.7 ns) — proof that the noise there exceeds the signal.
+# A 20% bound on any of that would fire daily and be muted within a week, which
+# is worse than no gate at all.
+#
+# So the guards are order-of-magnitude-ish and catch STRUCTURAL regressions:
+# a lost pipeline, an added device sync, a copy that used to be a borrow, a
+# lock or syscall on a hot path, self-collision switched back on by default.
+# They do not catch a 30% slowdown. Nothing automated in this repo does, and
+# claiming otherwise on a shared CI runner would be a lie. For small deltas,
+# run `make profile` on a quiet machine twice and read the table.
+#
+# A baseline is the FASTEST number observed when the row was written, not the
+# average. Wall-clock noise on a shared machine is one-sided — contention only
+# ever makes things slower — so the minimum is the closest estimate of the true
+# cost, and it makes the guard the tightest it can honestly be. A later run that
+# reads 0.9x needs no edit; only a row the table marks "faster — re-baseline"
+# (measured < baseline / tolerance) is claiming a real improvement worth
+# recording, and then you write the NEW minimum here with the run that produced
+# it. That is how `proxy_step_s_selfcol_on` got corrected from 9.410 to 0.253.
+# ---------------------------------------------------------------------------
+# metric	unit	baseline	tolerance	tier	what
+solver_ms_per_step	ms/step	20.952	2.0	quick	mguso bench, fabric_drape.json, 200 steps, implicit/gpu-pcg-block-jacobi(Metal). Only 100 verts, so this is GPU DISPATCH LATENCY, not cloth math — 4 runs: 20.95 / 24.82 / 26.99 / 28.48 (1.36x spread). 2x. PROVENANCE: Apple M4 / macOS 26.5.2 / rustc 1.96.0 --release, 2026-08-03, on a BUSY machine (other agents compiling Rust). NOT re-measured since; if it reads far off, suspect the load before the code.
+registry_ns_per_op	ns/op	65.4	4.0	quick	nguo-registry start+done with recording on. Session best 65.4; re-measured 131.7 on a machine compiling wgpu at the time (2.01x). At 65 ns the sample is cache- and scheduler-dominated, and the same run reported start+progress+done FASTER (82.6) than start+done (131.7), which is proof the noise exceeds the signal. 4x catches a lock/syscall/unbounded copy appearing; it will not catch one extra malloc. PROVENANCE: Apple M4 / macOS 26.5.2 / rustc 1.96.0 --release, 2026-08-03; the 65.4 best on a quiet moment, the 131.7 on a machine compiling wgpu. NOT re-measured since. This is the widest-tolerance row in the file and the least informative — treat a change here as unproven either way.
+handoff_blocking_ms_100k	ms	2.885	3.0	gpu	Blocking readback+upload ROUND TRIP, 100k verts x 28 B (DrapeVertex), median of 100 after 10 warmups. Readback alone is 1.327 — that is the ~1.3-1.8 ms "blocking floor" quoted elsewhere; this row is the full round trip. 3x, because the same blocking path was seen 2.05x apart across four runs of one binary. PROVENANCE: Apple M4 / Metal / IntegratedGpu, macOS 26.5.2, rustc 1.96.0 --release, 2026-08-03, busy machine; median of 100 after 10 warmups, so this row is the best-conditioned in the file. NOT re-measured since.
+handoff_pipelined_ms_100k	ms	0.325	3.0	gpu	Triple-buffered Handoff, ms per delivered frame at 100k verts (3073 fps sustainable, UI thread 0.296 med). This is the metric that would catch pipelining being lost: it would jump ~9x, to the blocking number. Same 3x. PROVENANCE: same run, same machine and load as handoff_blocking_ms_100k — Apple M4 / Metal, 2026-08-03, busy machine. NOT re-measured since.
+proxy_step_s_selfcol_off	s/step	0.066	3.0	avatar	Full collision proxy (10.3k v / 15.05k tris after seam splitting) + head-cap garment, self-collision OFF, worse of the two avatars. Five runs of identical code: 0.066 / 0.067 / 0.070 / 0.078 / 0.127 s/step = 1.92x spread. That is why the tolerance is 3.0 and not the 2.0 it started at: at 2.0 the third run reported REGRESSED, and the OFF and ON rows had moved together, which is the signature of machine contention rather than a code change. **BOTH proxy rows average 3 steps** — the ON row's old one-step timing was fixed 2026-08-04, so any note claiming the two rows differ in averaging is stale. PROVENANCE: Apple M4 / macOS 26.5.2 / rustc 1.96.0 --release, 2026-08-03 for the 0.066 baseline; RE-VERIFIED 2026-08-04 after streaming assembly (D-21) landed, reading 0.066 against a pre-change 0.056 = 1.18x. That 1.18x is inside this row's own 1.92x measured spread AND inside the 3.0 tolerance, so this file CANNOT tell it from noise, and no claim is made either way. Baseline left at 0.066 rather than lowered to 0.056: 0.056 was the pre-change tree, and the current tree reads 0.066.
+proxy_step_s_selfcol_on	s/step	0.277	2.0	avatar	Same scene, self-collision ON, worse of the two avatars (female). **RE-BASELINED 2026-08-04 and the tolerance came DOWN, which is the rare direction.** The row's own upgrade path has been taken: `collision_proxy_step_cost` timed the ON case over exactly ONE step, so it had no averaging and carried a 3.67x observed spread (0.253 / 0.348 / 0.379 / 0.445 / 0.928) that forced a 4.0 tolerance. It now averages 3 steps, matching the OFF row. Five runs of identical code afterwards: 0.276 / 0.277 / 0.276 / 0.276 / 0.277 s/step = **1.004x spread** (male 0.235-0.236). So 2.0 is now honest, and this row can finally distinguish a code change from a busy box. Provenance of the number moving 0.253 -> 0.277: 0.253 was a single unaveraged step, not a regression - the same tree measures 0.262-0.263 unaveraged over five runs, and 3-step averaging includes the more expensive settled steps. **Do not compare this row to the 0.269 male / 0.603 female figures in earlier notes**: those were single unaveraged steps on a different tree and one of them (0.603) does not reproduce in any configuration. History: this was 9.410 s/step before engine-core/src/broadphase.rs gained a `movable: &[bool]` mask that skips static-static edge pairs (~21x). Still ~17x over the 16.6 ms frame ceiling, so the full proxy is not interactive. PROVENANCE: Apple M4 / macOS 26.5.2 / rustc 1.96.0 --release, five runs 2026-08-04 on a machine quiet enough to give a 1.004x spread — the only row in this file measured under known-quiet conditions, which is exactly why it is the only one at 2.0. RE-VERIFIED later on 2026-08-04 after streaming assembly (D-21): 0.273 against this 0.277 baseline = 0.99x, ok, no regression and not a re-baseline (0.99x is nowhere near 1/2.0). D-21 changed memory, not speed, and this row is the evidence.
+#
+# ---------------------------------------------------------------------------
+# MEASURED BUT **NOT GUARDED HERE** — no harness can run them unattended, and a
+# metric nothing measures must not sit in a baseline file pretending to be
+# covered. NOTHING BELOW THIS LINE IS CHECKED BY `make profile-check`.
+# ---------------------------------------------------------------------------
+# peak_rss_bytes      **THE UNGUARDED METRIC THAT MATTERS MOST.** No row above
+#   measures memory at all, and 2026-08-04's largest result was a memory result.
+#   Recipe, so a later run is comparable: `/usr/bin/time -l`, --release, male COL
+#   proxy as a SIGNED static collider, self-collision ON, dt = 1/120, 12 steps,
+#   Apple M4 / macOS 26.5.2 / rustc 1.96.0. Peak max RSS, before -> after
+#   streaming Hessian assembly (`engine-core/src/csr.rs::TripletSink`, D-21):
+#       5 041 cloth verts    679 MB  ->    332 MB
+#      10 000 cloth verts  1 838 MB  ->    670 MB
+#      20 164 cloth verts  refused (projected ~4.2 GB)  ->  1 181 MB
+#      70 312 cloth verts  refused (projected 6.4-8.6 GB)
+#                          ->  2 901 590 016 B = 2.70 GiB   <- the 70k GATE, PASSES
+#   The gate is the maintainer's 4 GB cap, at 80 542 total vertices (cloth +
+#   proxy), 12 steps, all values finite. It is OVER the 2 GB target on RSS but
+#   UNDER it on peak LIVE bytes (1.27 GiB); the difference is libmalloc retention
+#   across 9.26 M allocations in broadphase/contact, not assembly.
+#   **Per-vertex memory is SUPERLINEAR — do not extrapolate from one scene.**
+#   Measured 82.7 KiB/v at 5 041, 59.2 at 10 000, 121.4 at 20 164: roughly 4x the
+#   memory for 2x the vertices. The old "~60 KB/vertex" figure was a single data
+#   point read as a constant, and it was wrong as a MODEL, not just as a number.
+#   To guard this you need an `#[ignore]`d test that reports its own peak RSS
+#   (`getrusage`/`ru_maxrss`) as a parseable line, plus a row above. Not written:
+#   a max-RSS assertion is allocator-dependent and would be a flaky guard on any
+#   machine but this one. Stated rather than quietly skipped.
+# corpus fit numbers  Every garment/body figure in `DECISIONS.md` D-20 and D-22
+#   (fit factors, inside-% before/after, distortion ratios, 183 MB for the whole
+#   corpus run) needs `samples/`, which is gitignored and third-party. **No CI
+#   runner can ever reproduce them.** They are local measurements on the machine
+#   in the header block, and nothing re-checks them. Do not add a row.
+# frame_ms            8.35-8.74 ms, nguo-app debug overlay, 120 Hz display.
+#   NOT A GUARD, and it is not GPU headroom. Present mode is `Fifo`
+#   (nguo-app/src/main.rs:1239 forces ICED_PRESENT_MODE=fifo) on a 120 Hz
+#   panel, so **8.33 ms is a hard floor**: the frame thread is *waiting* for
+#   vblank. 8.35 ms means "cadence kept", nothing more. A GPU 4x too slow for
+#   the frame would still read 8.33 ms until it started dropping frames, at
+#   which point the number jumps to 16.6 ms. Any frame-time number quoted in
+#   this project MUST carry this caveat. Automating it needs a window and a
+#   compositor; `make profile` deliberately stays headless.
+# avatar_load_ms      131.7-142.6 ms for LOD2 (25k v / 50k t), cold file cache.
+#   Measured off the `tracing` line in nguo-app/src/avatar.rs:196 by driving
+#   the real app. No headless entry point exists to time it, and the profiling
+#   harness owns no crate, so there is no automated guard. To get one, add an
+#   `#[ignore]`d timing test next to nguo-avatar's bundle tests and add a
+#   `handoff`-style row here.

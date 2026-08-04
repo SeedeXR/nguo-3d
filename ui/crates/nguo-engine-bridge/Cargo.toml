@@ -18,6 +18,11 @@ tracing = { workspace = true }
 # is the only crate that needs an async runtime today.
 tokio = { version = "1", features = ["rt", "sync", "macros"] }
 tempfile = "3"
+# The in-process transport (`inproc.rs`). Legal only because both lockfiles now
+# resolve wgpu 27.0.1 — see the crate docs. `engine-api` is what carries `Scene`
+# and `engine-core` what carries `Stitch` and the CPU linear solver.
+engine-api = { workspace = true }
+engine-core = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

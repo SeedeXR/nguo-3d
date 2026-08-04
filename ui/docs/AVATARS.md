@@ -12,17 +12,26 @@ Two things to read before anything else:
    **Attribution is required for all three, including to ourselves.** §7.
    There is no provenance blocker any more — an earlier version of this file
    said there was, and that bundle was deleted.
-2. **You cannot step a whole body through the solver today.** A 15 000-triangle
-   full-body proxy costs **9.4–12.5 s/step**, measured. Use
-   `engine_api::avatar::avatar_collider_near`. §5 is the whole story, and it is
-   the most consequential thing in this document.
+2. **A whole body is steppable — since 2026-08-04.** An earlier version of this
+   file said a 15 000-triangle proxy cost 9.4–12.5 s/step and that nothing could
+   step one. It now costs **0.235 s/step** (41×, `DECISIONS.md` D-17). Two things
+   in §5 still matter: the body is a **static `Object`, not a collider**, so
+   `"self-collision"` must be on; and the mesh contact path was **unsigned** until
+   2026-08-04, so a garment that started even 10 µm *inside* the body fell through
+   it silently. That is **fixed** — the gap against a static body is signed now —
+   but the recovery only arrests the garment at the skin, not outside it, so an
+   overlapping placement is still not something to author. §5 is the whole story
+   and it is still the most consequential thing in this document.
 
 ---
 
 ## 1. What is in the bundle
 
 `assets/avatars/`. Counted 2026-08-03 with `find assets/avatars -type f | wc -l`
-and a `stat -f %z` sum: **70 files, 238 242 276 bytes (227.2 MiB)**.
+and a `stat -f %z` sum: **70 files, 227.2 MiB**. The 36 binaries — the only part
+that cannot drift — are **238 053 569 bytes / 227.03 MiB**; the remaining ~190 KB
+is JSON and Markdown, and the Markdown moves whenever these documents are edited,
+so it is not quoted to the byte.
 
 That splits into **68 delivered bundle files** plus **2 repo-side files** added
 next to them (`LICENSE.md`, `LICENSES/CC-BY-4.0.txt`). Both counts are correct
@@ -35,10 +44,10 @@ delivery.
 | `avatars/vrm/` | 2 | 49.1 MiB | `nguo_<sex>.vrm` — the runtime GLB plus `VRMC_vrm` 1.0 |
 | `textures/skin/shared/` | 7 | 29.7 MiB | albedo-neutral, normal (OpenGL + DirectX), roughness, AO, height, subsurface — all 2048², tileable |
 | `textures/skin/tones/` | 10 | 18.6 MiB | `skin_albedo_MST01..MST10.png`, pre-tinted |
-| `previews/` | 11 | 5.2 MiB | hero / orthos / tones / walk sheets per sex, plus the swatch strip |
-| `data/` | 28 | 172 KiB | `manifest.json`, `skin_tones.json`, rig / UV / LOD / animation / export / self-test reports |
-| `docs/` + `README.md` | 4 | 48 KiB | `INTEGRATION.md`, `ATTRIBUTION.md`, `PIPELINE_NOTES.md` |
-| `LICENSE.md`, `LICENSES/` | 2 | — | repo-side: the notice, and the canonical CC BY 4.0 text (18 657 bytes) |
+| `previews/` | 11 | 5.1 MiB | hero / orthos / tones / walk sheets per sex, plus the swatch strip |
+| `data/` | 28 | 114.8 KiB | `manifest.json`, `skin_tones.json`, rig / UV / LOD / animation / export / self-test reports |
+| `docs/` + `README.md` | 4 | 38.1 KiB | `INTEGRATION.md`, `ATTRIBUTION.md`, `PIPELINE_NOTES.md` |
+| `LICENSE.md`, `LICENSES/` | 2 | 32.5 KiB | repo-side: the notice, and the canonical CC BY 4.0 text (18 657 bytes) |
 
 **Two avatars, keyed `male` and `female`** — those strings are the manifest keys
 and the API keys. There are no per-body ids like `nguo_female_01` any more.
@@ -62,8 +71,13 @@ The rules are **path-scoped, never bare-extension**. A bare `*.png` would also
 swallow the splash artwork and the icon set, and those are read by
 `include_bytes!` at *compile* time — an LFS pointer file would be embedded as
 text and the build would succeed with garbage. The avatar bundle is safe to LFS
-precisely because it is **runtime-loaded**: a pointer file fails loudly through
-`AvatarError::MeshLoad`.
+precisely because it is **runtime-loaded**: a pointer file is recognised as a
+pointer (`engine_io::is_lfs_pointer`) rather than fed to a parser. Since
+2026-08-04 that means `Bundle::open` fails with `AvatarError::LfsPointer` —
+naming `git lfs pull` — and `engine_io::load_mesh` refuses one before format
+dispatch. The older `AvatarError::MeshLoad`-from-the-glTF-reader path is gone:
+it produced a parse error about glTF grammar for what is really an unfetched
+object, and it is what took CI red on `7ce7827`.
 
 **A clone without `git-lfs` gets a tree whose avatars do not load.** That is the
 intended failure — loud and typed. `GIT_LFS_SKIP_SMUDGE=1` plus
@@ -225,7 +239,7 @@ has **no public constructor from floats** — the intended ways to obtain one ar
 
 > **The type is not airtight, verified 2026-08-03.** `BaseColorFactor` derives
 > `Deserialize` with `#[serde(transparent)]`
-> (`../crates/nguo-avatar/src/skin.rs:61`), so
+> (`../crates/nguo-avatar/src/skin.rs:78-80`), so
 > `serde_json::from_str::<BaseColorFactor>("[…]")` builds one from arbitrary
 > floats — including an sRGB swatch. The comment above the type says "no
 > constructor from floats on purpose", and serde is one. Treat the type as a
@@ -273,7 +287,7 @@ pane the test covers, so 1.8. The consequence to expect: the figure fills only
 
 ---
 
-## 5. Collision — the headline finding
+## 5. Collision — the headline finding, and its resolution
 
 `engine-api` owns this half, because the solver's own crate is where a body has
 to be validated:
@@ -281,7 +295,7 @@ to be validated:
 
 ```
 nguo_<sex>_collision.glb ──engine_io::load_mesh──▶ Object
-                         ──avatar_collider_near──▶ static collider Object
+                         ──avatar_collider_near──▶ cropped static Object
                          ──drape_on_avatar───────▶ Scene ──build_implicit──▶ Solver
 ```
 
@@ -296,37 +310,62 @@ mesh. Same mechanism `auto_drape` uses.
 (`Scene::build`) has no self-collision at all and the garment passes straight
 through the body.
 
-### 5.1 A full-body proxy is not steppable
+### 5.1 A full-body proxy **is** steppable — since 2026-08-04
 
-Measured on this machine (Apple Silicon, `--release`, dt = 1/120, one 36-vertex
-cloth patch dropped on the body) by
+**This section said the opposite until 2026-08-04, and the numbers below are
+why it changed.** Measured on this machine (Apple Silicon, `--release`,
+dt = 1/120, one 36-vertex cloth patch dropped on the body, medians of 3 runs) by
 `engine-api/tests/avatar_bundle.rs::collision_proxy_step_cost`:
 
-| body in the scene | scene tris | self-collision | s/step |
-|---|---|---|---|
-| full proxy, male | 15 050 | on | **9.410** |
-| full proxy, female | 15 050 | on | **12.533** |
-| full proxy, either | 15 050 | **off** | 0.068 |
-| region crop of the crown | 235–261 | on | 0.043–0.048 |
+| body in the scene | scene tris | self-collision | before | after |
+|---|---|---|---|---|
+| full proxy, male | 15 050 | on | **9.724** | **0.235** |
+| full proxy, female | 15 050 | on | **15.951** | **0.245** |
+| full proxy, either | 15 050 | **off** | 0.068 | 0.068 |
+| region crop of the crown | 306–333 | on | 0.065–0.087 | 0.022–0.026 |
 
-**Read the third row.** The body in the linear system is nearly free. The
-**138–184×** is the body's own 15 000 triangles going through the cloth
-self-collision broad phase as if they could collide with *each other*.
-`drape_scene`'s schedule is 12 substeps × 300 frames = 3 600 steps for a 5 s
-settle: **9.4 hours for one drape.**
+**41×.** The 143× penalty over the self-collision-off case is now **3.5×**,
+which is a normal ratio for a cloth solver with self-collision on.
+`drape_scene`'s 12 substeps × 300 frames went from **9.4 hours to 14 minutes**.
 
-**Decimation does not fix it, and that is measured, not asserted.** The
-predecessor bundle's proxy was 5 227 triangles at 2.27 s/step, measured the same
-way. 2.88× the triangles cost 4.15×, an exponent of **≈1.35**. Reaching an
-interactive 0.1 s/step from 9.41 needs a 94× speed-up, i.e. 94^(1/1.35) ≈ 29×
-fewer triangles ≈ **520 triangles for a whole body** — which is not a body.
+**The fix was a filter, not a new collider.** A candidate contact pair whose
+participants are *all* immovable is provably inert — the Dirichlet filter drops
+all four of its Newton rows and all four displacements are exactly zero — so
+`engine-core/src/broadphase.rs` stops emitting such pairs, keys the decision on
+`inv_mass`, and indexes its spatial grid by the *movable* primitives only. No
+`ColliderSpec::Mesh` was added and `engine-api/src/scene.rs` was not touched.
+Full reasoning, the profile of what remains, and the two next levers:
+`DECISIONS.md` D-17 (engineering memory, not published).
 
-**The real fix is a static mesh collider in the solver**: a body-versus-cloth
-pass that never tests body-versus-body. That lives in `engine-core` /
-`engine-gpu` and **is not written**. Until it is, the 15 000-triangle proxy is a
-correctness asset and a performance trap.
+**Decimation was rejected on measurement and stays rejected**, now as history:
+the predecessor bundle's proxy was 5 227 triangles at 2.27 s/step; 2.88× the
+triangles cost 4.15×, exponent **≈1.35**, which would have put an interactive
+whole body at **~520 triangles**. Nobody should ask the asset pipeline for a
+coarser proxy.
 
-### 5.2 The workaround that ships
+> **FIXED 2026-08-04. Read the residual.** The mesh contact path used the
+> **unsigned** point–triangle distance, so a cloth vertex starting even **10 µm**
+> on the far side of a body triangle was pushed further out the wrong side and
+> never recovered — the garment ended inside the body, with no diagnostic and no
+> non-finite value (measured: mean y **−18.43 m** after 400 steps from a −10 µm
+> start).
+>
+> A body triangle's gap is now **signed** by the triangle's own outward normal
+> (`engine_core::contact::signed_point_tri_distance_grad`), and the negative
+> branch uses the cubic barrier, which is finite and repulsive through zero. The
+> same start now arrests at **−2.7 mm** and stays there. `Scene::build_implicit`
+> turns this on for every `is_static` object; the winding is **checked**, and a
+> proxy wound inward falls back to the old unsigned behaviour with a
+> `tracing::warn!` rather than sucking the cloth in.
+>
+> **Residual:** the recovery stops at the skin, a few millimetres inside, rather
+> than pushing the garment clear the way the analytic collider does. Do not author
+> an overlapping placement — the default arrangement clears the body (garment
+> radius 0.2481 m against a female maximum of 0.2033 m over the garment's span),
+> but an authored `Placement3d::Rigid`, a reduced `gap_m` or a posed limb can
+> violate it.
+
+### 5.2 The crop — now an optimisation, not a workaround
 
 ```rust
 engine_api::avatar::avatar_collider_near(&body, region, margin) -> Result<Object, AvatarError>
@@ -338,6 +377,11 @@ garment's own `Aabb`; `margin` covers how far it will fall. A sleeve, a bodice
 or a waistband only ever contacts a fraction of a body, and the crop lands in
 the same ~0.05 s/step bracket as everything else.
 
+**Since §5.1's fix this is a speed-up, not a requirement** — the whole body is
+steppable at 0.235 s/step. Take it anyway when it is easy: `nguo-app` uses the
+same idea as a y-band clip and measures **0.119 → 0.051 s/step, 2.3×, for twenty
+lines**.
+
 **Its ceiling, named in the source:** cloth that leaves the region sees no body
 and passes through it. Size `margin` to the fall distance, or pass the whole
 body's box to opt out. It is `ponytail:`-marked — an AABB is the whole selector,
@@ -347,8 +391,8 @@ than a box.
 `avatar_collider(&Object)` is still there for the whole body: it validates a
 disk-loaded mesh (a trust boundary — both body and garment come off disk, and a
 corrupt or empty file must error rather than panic inside `Scene::lower`) and
-lowers it to a static collider. Loading and lowering the full proxy is tested;
-only *stepping* it is scoped.
+lowers it to a static collider. Loading, lowering **and stepping** the full
+proxy are all tested now.
 
 ### 5.3 Placement
 
@@ -427,51 +471,61 @@ a manifest number.
 
 ## 7. Licensing and attribution
 
-Full policy: [`../../LICENSING.md`](../../LICENSING.md) §0, §4 and §5. The
-bundle's own record: `assets/avatars/LICENSE.md`.
+**This section is not the authority on any of it.** Per-component licences live in
+`assets/avatars/LICENSE.md`; project-wide policy in
+[`../../LICENSING.md`](../../LICENSING.md) §0, §4 and §5; the notice wording in a
+`pub const`. What follows is only what a *code* reader has to know, which is three
+things.
 
-| Component | Licence | Position |
-|---|---|---|
-| **Bodies, rigs, weights, LODs, collision proxies, previews** | **CC BY 4.0**, licensor **Seede XR** | Ours, owned outright. **Attribution REQUIRED — including to ourselves** |
-| **Skin textures** (texturecan.com, cgbookcase.com) | **CC BY 4.0** | **Attribution REQUIRED** |
-| **Monk Skin Tone Scale** (Ellis Monk / Google) | **CC BY 4.0** | **Attribution REQUIRED**; the tone picker ships |
-| **Mixamo clips** baked into the GLB/VRM | Adobe Mixamo terms | Baked into a derived character = the intended use. **Does not travel under our CC BY grant** — do not redistribute the GLB/VRM as a standalone asset pack |
-| Code (`ui/**`, `core-engine/**`) | **GPL-2.0-or-later** | unchanged. `bridges/blender/` is GPL-3.0-or-later |
+**1. Attribution is required and the wording is a const, not a string literal.**
 
-**The former release blocker is CLOSED.** An earlier bundle (223 MB, four
+> **`nguo_avatar::ATTRIBUTION_NOTICE`** — `../crates/nguo-avatar/src/skin.rs:69`
+
+One consolidated string discharges all three CC BY 4.0 obligations — Seede XR as
+licensor (we owe attribution to ourselves), the skin-texture sources, and the Monk
+Skin Tone Scale — and credits Mixamo. `nguo_avatar::MONK_ATTRIBUTION`
+(`skin.rs:49`) is the Monk line alone. **Render the const; never retype the
+words.** Hand-copied variants are how the shipped build under-attributed earlier —
+the copies drifted and the short ones dropped "licensed under CC BY 4.0" and the
+licence URL. `nguo-app` renders it at `../crates/nguo-app/src/main.rs:901`, and
+`../crates/nguo-avatar/tests/bundle.rs:277` asserts on it.
+
+**There is no about/credits screen yet.** The notice renders today in a *Credits*
+section of the properties panel, which is collapsible — so the credit is
+technically present and practically easy to hide. Closing that gap is the tracked
+follow-up and a review item on whichever PR builds the screen, because no tool in
+this repo can enforce it (`cargo-deny` and `cargo-about` see Cargo metadata only).
+
+**2. The grant is clean; two constraints bind the *manner* of redistribution.**
+The CC BY 4.0 grant over Seede XR's modelling data — meshes, rigs, weights, LODs,
+collision proxies, the derived tiers — has nothing carved out of it. Two of the
+shipped files carry a limit on how they may be passed on, and neither is a licence
+exception:
+
+- **The baked Mixamo clips are outside the grant** (Adobe's, licensed to the
+  downloading account, not ours to sub-license). The files may travel **as a
+  derived character used in the application** — the intended use — and **not as a
+  standalone animation pack**.
+- **The `VRMC_vrm.meta` block in the two `.vrm` files is narrower than the
+  grant** — `allowRedistribution: false`, `avatarPermission: onlyAuthor`, a
+  VRM-Public-License `licenseUrl`. Every divergence runs restrictive, so nothing
+  is over-granted, but a VRM consumer reads the block programmatically, so those
+  two files carry a redistribution limitation the GLBs do not. Lifting it needs
+  the upstream pipeline's `scripts/09_export_vrm.py` re-run; it cannot be done
+  here. Field table and target values: `assets/avatars/LICENSE.md`.
+
+Neither touches the loader, and neither blocks commercial use of the geometry.
+
+**3. The former release blocker is CLOSED.** An earlier bundle (223 MB, four
 avatars, unverified provenance) was **deleted** and replaced, not re-licensed.
 `CC-BY-4.0` was added to `deny.toml` and both `about.toml` files, all three
 agreeing at a **21-entry** allow-list (`make licenses-sync`), and the canonical
 licence text is vendored at `assets/avatars/LICENSES/CC-BY-4.0.txt`
 (18 657 bytes, sha256 `9ba9550a…`).
 
-**One consolidated notice discharges all three obligations.**
-`nguo_avatar::ATTRIBUTION_NOTICE` carries it, and `nguo_avatar::MONK_ATTRIBUTION`
-carries the MST line on its own:
-
-> Avatars © Seede XR. Skin textures based on material from texturecan.com and
-> cgbookcase.com (CC BY 4.0). Complexion range based on the Monk Skin Tone Scale
-> by Ellis Monk (CC BY 4.0). Character animation from Adobe Mixamo.
-
-**There is no about/credits screen yet.** The notice renders today in a
-*Credits* section of the properties panel, which is collapsible — so the credit
-is technically present and practically easy to hide. Closing that gap is the
-tracked follow-up, and it is a review item on whichever PR builds the screen,
-because no tool in this repo can enforce it (`cargo-deny` and `cargo-about` see
-Cargo metadata only).
-
-### Two open items on the shipped bytes
-
-1. **The VRM metadata contradicts the CC BY 4.0 grant.** Both `.vrm` files embed
-   `VRMC_vrm.meta` with `allowRedistribution: false`,
-   `avatarPermission: onlyAuthor` and a VRM-Public-License `licenseUrl`. CC BY
-   4.0 grants both, and a VRM consumer believes the binary over a text file. The
-   error is in the **restrictive** direction, so nothing is over-granted, but it
-   is still wrong. **Not fixable here** — the metadata is written by the
-   upstream pipeline's `scripts/09_export_vrm.py`, which must be re-run.
-2. **`assets/avatars/docs/ATTRIBUTION.md` still says "proprietary".** It is the
-   upstream bundle's own file, superseded by the CC BY 4.0 decision. Needs the
-   same edit at the next build.
+Code licensing is unchanged: `ui/**` and `core-engine/**` are GPL-2.0-or-later,
+`bridges/blender/` GPL-3.0-or-later. A CC BY 4.0 asset directory does not touch
+that; `../../LICENSING.md` §0 is the authority on the split.
 
 ---
 
@@ -531,8 +585,12 @@ nothing measurable to draw.
 > 120 Hz display, so **8.33 ms is a hard floor**. This proves the avatar did not
 > knock the app off the vsync cadence. It does **not** measure GPU headroom.
 
-**Solver:** §5.1. That is the number that matters and it is bad.
+**Solver:** §5.1. That is the number that matters, and as of 2026-08-04 it is
+**0.235 s/step** for a whole body rather than 9.724.
 
-**Suites:** `core-engine` 393 passed / 0 failed / 3 ignored; `ui` 400 passed /
-0 failed. `cargo fmt --check` and `cargo clippy --all-targets -D warnings` clean
-in both.
+**Suites (re-run 2026-08-04, debug):** `core-engine` **399** passed / 0 failed /
+3 ignored; `ui` **542** passed / **2 failed** / 3 ignored — the two being
+`nguo-cli`'s end-to-end tests, which need a built `mguso` and hard-fail rather
+than skip without one. `cargo fmt --all --check` and
+`cargo clippy --workspace --all-targets -D warnings` **exit 0 in both**
+workspaces, re-run the same day.

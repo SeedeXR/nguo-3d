@@ -10,6 +10,12 @@ rust-version.workspace = true
 
 [dependencies]
 nguo-gpu = { workspace = true }
+nguo-ui-theme = { workspace = true }
+# The canvas reads the document and emits transactions. It never mutates:
+# `Document`'s fields are private to `nguo-doc`, so that is structural.
+nguo-doc = { workspace = true }
+nguo-doc-commands = { workspace = true }
+nguo-pattern = { workspace = true }
 iced = { workspace = true }
 # kurbo/peniko come through vello so the versions cannot drift.
 vello = { workspace = true }
@@ -17,3 +23,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
+proptest = "1"

@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+[package]
+name = "nguo-sewing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Seam topology, segment correspondence, 3D arrangement, and the 2D->3D garment assembly handed to the solver."
+
+[dependencies]
+nguo-doc = { workspace = true }
+nguo-pattern = { workspace = true }
+nguo-triangulate = { workspace = true }
+kurbo = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+# `tests/end_to_end.rs` sweeps the triangulation resolution the shipped
+# `SewOptions` default is chosen from, so it names the options type directly.
+nguo-triangulate = { workspace = true }

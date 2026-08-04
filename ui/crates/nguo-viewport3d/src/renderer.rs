@@ -380,6 +380,16 @@ impl AvatarRenderer {
         ensure_depth(&mut self.depth, device, width, height);
     }
 
+    /// The depth attachment this renderer allocated, for a sibling pass to share.
+    ///
+    /// Two mesh passes in one frame **must** test against one depth texture, or
+    /// the second one is not occluded by the first at all. So exactly one
+    /// renderer per frame calls [`Self::ensure_depth`] and hands this to the
+    /// others.
+    pub fn depth_view(&self) -> Option<&wgpu::TextureView> {
+        self.depth.as_ref().map(|d| &d.view)
+    }
+
     /// Upload the frame's uniforms, and the geometry too if the mesh changed.
     pub fn upload(
         &mut self,
@@ -405,15 +415,22 @@ impl AvatarRenderer {
 
     /// Records the avatar pass. `rect` is the widget in the frame, `clip` that
     /// intersected with its clip bounds — both physical pixels.
+    ///
+    /// `depth` is the frame's shared depth attachment (see [`Self::depth_view`]).
+    /// `clear_depth` must be `true` for the FIRST mesh pass of the frame and
+    /// `false` for every one after it. Clearing twice is how a garment ends up
+    /// drawn straight through the body it is meant to be occluded by.
     pub fn draw(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         rect: PhysicalRect,
         clip: PhysicalRect,
+        depth: &wgpu::TextureView,
+        clear_depth: bool,
     ) {
-        let (Some(depth), Some(geometry)) = (&self.depth, &self.geometry) else {
-            tracing::warn!(target: "nguo_viewport3d", "no depth buffer or no mesh; skipping avatar pass");
+        let Some(geometry) = &self.geometry else {
+            tracing::warn!(target: "nguo_viewport3d", "no mesh uploaded; skipping mesh pass");
             return;
         };
         if rect.is_empty() || clip.is_empty() || geometry.index_count == 0 {
@@ -432,10 +449,16 @@ impl AvatarRenderer {
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &depth.view,
+                view: depth,
                 depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Discard,
+                    load: if clear_depth {
+                        wgpu::LoadOp::Clear(1.0)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
+                    // Kept, not discarded, when a later pass in the same frame
+                    // still has to test against it.
+                    store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: None,
             }),

@@ -1,7 +1,18 @@
 # Pipeline notes — what went wrong and what the numbers were
 
-Written for whoever changes these scripts next. Everything here was measured on
-these two bodies; the numbers are the reason the code looks the way it does.
+**The build pipeline is not in this repository.** Every `scripts/*.py` named below
+lives upstream, with the `.blend` masters, the Unity export and the verification
+suite; you cannot open them from a clone. This file is kept anyway, and only for
+this: it is **the evidence behind the asset properties the app depends on** —
+why LOD0 is the artist's mesh untouched (§1, §10), why there are exactly 4 joint
+influences per vertex and what a naive top-4 truncation costs (§5), why 19 of 65
+bones carry no weights (§6), why distortion is gated at 5× the median edge rather
+than in millimetres (§7), and why retargeting compares rest-relative deltas (§8).
+Those numbers are cited from our own code and docs; deleting them would leave the
+claims unsupported.
+
+Everything here was measured on these two bodies. If you are consuming the bundle
+rather than auditing it, `INTEGRATION.md` is the document you want.
 
 The governing constraint was: **never move a surface vertex.** The shipped LOD0
 is the artist's mesh, verified vertex-for-vertex against the original file. Every

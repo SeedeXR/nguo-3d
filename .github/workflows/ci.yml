@@ -71,17 +71,25 @@ jobs:
 
   # -------------------------------------------------------------------------
   # The test suite. --no-fail-fast so one broken target does not hide the rest.
-  # This job is REQUIRED and is expected to be RED until the engine-api
-  # regression + engine-io collada/gltf/usda failures are fixed (338 pass /
-  # 4 targets failing as of 2026-08-01). That is deliberate: CI must not
-  # pretend the suite is green.
+  # This job is REQUIRED and is expected to be GREEN. The 2026-08-01 caveat that
+  # used to sit here ("expected to be RED until the engine-api regression +
+  # engine-io collada/gltf/usda failures are fixed, 338 pass / 4 targets
+  # failing") is spent: those are fixed, and the baseline re-measured 2026-08-04
+  # is core-engine 399 pass / 0 fail and ui 542 pass / 2 fail (the two being
+  # nguo-cli's end-to-end tests, which this job satisfies because it builds both
+  # workspaces). A red `test` job is a regression, not the status quo.
   # -------------------------------------------------------------------------
   #
-  # NOTE ON AVATAR COVERAGE: this job checks out WITHOUT LFS, so
-  # `assets/avatars/` is absent and the avatar suites SKIP. That is deliberate —
-  # see the `avatars` job below, which is the only place that pays the 227 MB
-  # LFS download. `make test` depends on `make avatar-bundle`, so the skip is
-  # printed at the top of this job's log instead of being silent.
+  # NOTE ON AVATAR COVERAGE: this job checks out WITHOUT LFS. `assets/avatars/`
+  # IS tracked (70 files since 7ce7827, 36 of them LFS), so the directory is
+  # present but every mesh and texture is ~130 bytes of git-LFS pointer text.
+  # The avatar suites treat a pointer as an ABSENT asset and SKIP — that is a
+  # deliberate guard (`engine_io::is_lfs_pointer`), not an accident of the file
+  # being missing. Before it existed this job went red on 7ce7827 with four
+  # glTF-reader panics. Paying for the bundle is the `avatars` job's business —
+  # the only place in this repo's CI that downloads the 227 MB. `make test`
+  # depends on `make avatar-bundle`, so the skip is printed at the top of this
+  # job's log instead of being silent.
   test:
     name: cargo test (both workspaces)
     runs-on: macos-15
@@ -102,28 +110,34 @@ jobs:
   # `actions/checkout` does NOT fetch LFS objects by default — it needs
   # `lfs: true`, which runs `git lfs fetch/checkout` after the clone. Without
   # it the working tree gets ~130-byte pointer TEXT files in place of the GLBs.
-  # Those would not be "missing", so the bundle-gated tests would not skip
-  # either; they would fail inside the glTF reader. The loud typed failure is
-  # `AvatarError::MeshLoad`, which is exactly what we want if LFS ever breaks.
+  # Those files are not "missing", so a presence gate built on `is_file()` says
+  # the bundle is there while none of its geometry is. That is not theory: it
+  # took `main` red on 7ce7827 with four glTF-reader panics in the `test` job.
+  # `engine_io::is_lfs_pointer` now closes it — a pointer counts as an ABSENT
+  # asset, so every bundle-gated suite skips instead of exploding. THIS job is
+  # the one that must not be allowed to skip, which is why it runs
+  # `make test-avatars` (MGUSO_REQUIRE_AVATAR_BUNDLE=1): if `lfs: true` ever
+  # silently hands back pointers, the skip becomes a hard failure here.
   #
   # WHY NOT `lfs: true` EVERYWHERE: five jobs × 227 MB per push, on a metered
-  # LFS bandwidth allowance, to make four jobs' worth of tests skip for the
+  # LFS bandwidth allowance (the SeedeXR org is on the FREE plan = 1 GiB/month,
+  # i.e. ~4 runs of this job), to make four jobs' worth of tests skip for the
   # third time. One job pays it. The rest deliberately run bundle-less, which
   # also keeps "does the app degrade gracefully with no bundle?" continuously
   # tested rather than asserted.
   #
-  # HONESTY ABOUT WHAT THIS COVERS TODAY: `assets/avatars/` is NOT yet tracked
-  # in git (verified 2026-08-03: `git ls-files assets | wc -l` = 0, and
-  # `git lfs ls-files` is empty). So on the first push this job will find no
-  # bundle and report **NOT RUN** — loudly, in the job summary — instead of
-  # passing quietly as if it had tested something. It is listed as ADVISORY in
-  # ui/docs/CI.md §2 until the bundle is committed, precisely so that no
-  # coverage is claimed that did not run.
+  # WHAT THIS COVERS TODAY: `assets/avatars/` IS tracked — 70 files, 36 of them
+  # LFS, committed in 7ce7827 and pushed (re-verified 2026-08-04:
+  # `git ls-files assets/avatars` = 70, `git lfs ls-files` = 36). The earlier
+  # note here said 0 and that no coverage existed; that was true on 2026-08-02
+  # and the bundle landed the next day. This job ran green on a real runner in
+  # 13m34s and is genuine coverage.
   #
-  # TO MAKE IT BLOCKING once the bundle is committed: delete the `if` around
-  # the last step and the whole `Bundle presence` step, leaving `make
-  # test-avatars` unconditional (it already fails on a missing bundle), then add
-  # `avatars` to the branch-protection required-checks list.
+  # TO MAKE IT BLOCKING — the precondition is met, this is the last step: delete
+  # the `if` around the last step and the whole `Bundle presence` step, leaving
+  # `make test-avatars` unconditional (it already fails on a missing bundle),
+  # then add `avatars` to the branch-protection required-checks list. Until that
+  # happens the pointer-skip above means NO BLOCKING JOB covers the avatar path.
   # -------------------------------------------------------------------------
   avatars:
     name: avatar bundle coverage
@@ -142,8 +156,11 @@ jobs:
 
       # Two separate questions, and conflating them is how a vacuous green tick
       # happens: (1) is the bundle in the repository at all, (2) did LFS give us
-      # real bytes. `make avatar-bundle` answers (2)-ish by reporting the size;
-      # `git ls-files` answers (1) and needs no LFS.
+      # real bytes. `make avatar-bundle` answers both — it reports the file count
+      # and size and flags any asset that is still a git-LFS pointer;
+      # `git ls-files` answers (1) alone and needs no LFS.
+      # The `tracked -eq 0` branch below is DEAD on `main` (70 files since
+      # 7ce7827) and is what the promotion note above says to delete.
       - name: Bundle presence
         id: bundle
         run: |
@@ -228,38 +245,95 @@ jobs:
           if-no-files-found: error
 
   # -------------------------------------------------------------------------
-  # Performance. This measures something real today (`mguso bench` -> ms/step
-  # on the canonical drape scene) and records it as an artifact.
+  # Performance. `tools/profile.sh` collects the benchmarks that already exist
+  # in the crates (all `#[ignore]`d, so `make test` never pays for them) and
+  # compares each one against `tools/perf-baseline.tsv`.
   #
-  # NOT IMPLEMENTED: the UI frame-time budget gate
-  # (8.3 ms target / 16.6 ms ceiling). Those budgets are UI frame times and
-  # there is no UI, no canonical 50-piece project, and no stored baseline to
-  # compare against, so there is no honest threshold to assert. This job
-  # therefore reports and never fails on timing. Turn it into a gate when a
-  # baseline exists — see ui/docs/CI.md "Perf".
+  # ADVISORY, AND IT WILL STAY ADVISORY. Not timidity — these are wall-clock
+  # numbers, and:
+  #   * the runner is shared and virtualised. The GPU here is Apple
+  #     Paravirtual, not the M4 the baseline was taken on, so the handoff rows
+  #     are NOT comparable to it in absolute terms.
+  #   * the same blocking handoff was measured 4.6 ms and 9.4 ms across four
+  #     runs of one unchanged binary on a quiet laptop. Any bound tight enough
+  #     to be interesting would fire on noise and be muted within a week.
+  # So a REGRESSED row here means "a human should look", never "the PR is
+  # broken". The table lands in the job summary for exactly that reason.
+  # For a real gate, run this on a self-hosted machine with a baseline
+  # measured on it: `BASELINE=... tools/profile.sh --check` and drop
+  # continue-on-error.
+  #
+  # WHAT THIS JOB DOES **NOT** COVER, stated so no one reads a green tick as
+  # more than it is:
+  #   * the avatar tier (`collision_proxy_step_cost` — the self-collision
+  #     on/off cost of the full body proxy) needs the 227 MB avatar bundle.
+  #     `assets/avatars/` IS tracked (70 files, 36 in LFS, since 7ce7827;
+  #     re-verified 2026-08-04), so the objects exist — but this job checks out
+  #     without `lfs: true` on purpose, so what lands on disk is pointer text
+  #     and the tier has nothing real to measure. It is excluded from `--only`
+  #     here rather than left to skip, so the job does not spend minutes
+  #     proving that. Add `lfs: true` only if you also accept the bandwidth:
+  #     the avatars job already spends 227 MB per push against a 1 GiB/month
+  #     free-plan allowance.
+  #   * frame time (8.3 ms target / 16.6 ms ceiling). `nguo-app` forces
+  #     `ICED_PRESENT_MODE=fifo`, so on a 120 Hz panel 8.33 ms is a HARD
+  #     FLOOR: a measured 8.35 ms proves the cadence was kept and says nothing
+  #     about GPU headroom. Measuring it needs a window and a compositor,
+  #     which this headless runner does not have. The frame budget is
+  #     nevertheless enforced where it can be — `handoff_bench.rs`'s
+  #     `verdict()` scores every transfer against 8.3/16.6 ms, and those rows
+  #     are in the table.
   # -------------------------------------------------------------------------
   perf:
-    name: perf (measure only, no threshold yet)
+    name: perf (advisory — wall clock on a shared runner)
     runs-on: macos-15
     continue-on-error: true # advisory: a slow shared runner must not block a PR
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # deliberately no `lfs: true` — see above
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: core-engine
-          key: gpu # share the gpu job's cache; same build
+          workspaces: |
+            core-engine
+            ui
+          # Its own key: this job release-builds nguo-gpu (iced + wgpu) and
+          # nguo-registry, which no other job does. First run is cold.
+          key: perf
       - run: make build-engine
-      - name: Solver throughput
-        run: make bench | tee bench.json
+
+      # Checks the output PARSERS against a fixture; runs no benchmark and
+      # takes ~50 ms. It catches a bad edit to a parser, NOT a benchmark that
+      # changed its output format — that shows up as a SKIP row, which is what
+      # `--require` below turns into a failure.
+      - name: Profiler parser selftest
+        run: tools/profile.sh --selftest
+
+      # --check so the table says REGRESSED instead of leaving a human to do
+      # arithmetic. --require because the two tiers selected here have no
+      # legitimate reason to skip on this runner: a SKIP means no adapter or a
+      # build failure, and it must not read as a quiet dash. `continue-on-error`
+      # above is the only thing keeping any of this non-blocking.
+      - name: Profile (solver, registry, handoff)
+        run: tools/profile.sh --check --require --only quick,gpu | tee profile.md
+
       - name: Summary
+        if: always() # a REGRESSED row exits non-zero; the table is the point
         run: |
           {
-            echo "### Solver throughput (no budget enforced yet)"
-            echo '```json'
-            cat bench.json
-            echo '```'
+            echo "### Performance vs \`tools/perf-baseline.tsv\` (ADVISORY)"
+            echo
+            echo "Wall clock on a shared, virtualised runner. Absolute values are"
+            echo "**not** comparable to the baseline hardware (Apple M4, bare metal);"
+            echo "read this for drift between runs on this runner class, not pass/fail."
+            echo "Avatar tier and frame time are not covered — see the job comment."
+            echo
+            if [ -f profile.md ]; then cat profile.md; else
+              echo "**tools/profile.sh produced no table** — it failed before printing."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: bench-macos-arm64
-          path: bench.json
+          name: profile-macos-arm64
+          path: profile.md
+          if-no-files-found: warn

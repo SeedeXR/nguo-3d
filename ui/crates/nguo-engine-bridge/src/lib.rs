@@ -18,21 +18,30 @@
 //!
 //! # Why there is a [`Transport`] trait
 //!
-//! This is a deliberate, load-bearing seam, not speculative abstraction.
-//! `core-engine` is on `wgpu 30` today while this workspace is pinned to
-//! `wgpu 27` (`core-engine/docs/WGPU_PIN.md`); a path dependency on
-//! `engine-api`/`engine-core`
-//! right now would pull two incompatible wgpu majors into one binary. So the
-//! only implementation that exists today is [`ProcessTransport`], which drives
-//! the `mguso` binary over its documented process contract
-//! (`core-engine/docs/PROCESS_CONTRACT.md`). Once the wgpu pin unifies, an
-//! in-process transport calling `engine_core` directly is a drop-in second
-//! impl behind the same trait — nothing above [`Transport`] changes.
+//! Two implementations exist, and the choice between them is not about speed.
+//!
+//! * [`InProcessTransport`] calls `engine-api` directly. **Use it to drape a
+//!   sewn garment.** `engine_api::Scene` has no stitch field
+//!   (`engine-api/src/scene.rs:71-78`) — stitches reach the solver only through
+//!   `ImplicitSolver::set_stitches` — so this is the only transport that can
+//!   close a seam.
+//! * [`ProcessTransport`] spawns the `mguso` binary over its documented process
+//!   contract (`core-engine/docs/PROCESS_CONTRACT.md`). It writes a per-frame OBJ
+//!   sequence, which is what an export wants, and it isolates a solver crash in
+//!   another process. It **rejects** a submission carrying stitches rather than
+//!   quietly draping the garment unsewn.
+//!
+//! The original reason for the seam — `core-engine` on `wgpu 30` against this
+//! workspace's `wgpu 27` — is **gone**: both lockfiles now resolve `wgpu 27.0.1`,
+//! which is what made [`InProcessTransport`] possible at all. The trait stays
+//! because two live implementations now use it.
 
 mod bridge;
+mod inproc;
 mod process;
 mod transport;
 
 pub use bridge::{EngineBridge, Epoch, Update, FRAME_CHANNEL_CAPACITY};
+pub use inproc::InProcessTransport;
 pub use process::{resolve_engine_binary, ProcessTransport};
-pub use transport::{BridgeError, Flow, FrameSink, Submission, Summary, Tier, Transport};
+pub use transport::{BridgeError, Flow, FrameSink, Stitch, Submission, Summary, Tier, Transport};

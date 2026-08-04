@@ -37,7 +37,9 @@ const SHIPPED: [Asset; 4] = [
 fn bundle() -> Option<Bundle> {
     match Bundle::find() {
         Ok(b) => Some(b),
-        Err(AvatarError::BundleNotFound(path)) => {
+        // A bundle whose LFS objects were never fetched is not a usable bundle —
+        // same skip as no bundle at all. Anything else really is a broken bundle.
+        Err(e @ (AvatarError::BundleNotFound(_) | AvatarError::LfsPointer { .. })) => {
             {
                 use std::io::Write;
                 // fd 2 directly, NOT `eprintln!`: libtest captures the print
@@ -46,14 +48,12 @@ fn bundle() -> Option<Bundle> {
                 // engine-api/tests/avatar_bundle.rs.
                 let _ = writeln!(
                     std::io::stderr(),
-                    "SKIPPING nguo-avatar bundle test: no avatar bundle at {}. \
-                 Install the nguo avatar bundle to assets/avatars/, or set \
-                 NGUO_AVATAR_BUNDLE.",
-                    path.display()
+                    "SKIPPING nguo-avatar bundle test: {e}. Install the nguo avatar \
+                     bundle to assets/avatars/, or set NGUO_AVATAR_BUNDLE."
                 );
                 assert!(
                     std::env::var_os("MGUSO_REQUIRE_AVATAR_BUNDLE").is_none(),
-                    "MGUSO_REQUIRE_AVATAR_BUNDLE is set but the avatar bundle is absent"
+                    "MGUSO_REQUIRE_AVATAR_BUNDLE is set but {e}"
                 );
             }
             None

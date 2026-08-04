@@ -5,7 +5,7 @@
 //! Everything in this module is framework-free arithmetic or plain data, so it
 //! is testable without a window. The iced side lives in `main.rs`.
 
-use nguo_doc::{Document, Edit, PieceId};
+use nguo_doc::{Document, PieceId};
 use nguo_ui_theme::Tokens;
 use nguo_ui_widgets::dock::{Axis, DockLayout, Node, Panel, Split, Tab};
 use nguo_ui_widgets::icon::Icon;
@@ -153,55 +153,22 @@ fn piece_key(id: PieceId) -> String {
     format!("piece/{}", id.raw())
 }
 
-/// A two-piece bodice, applied through `Document::apply_edit` like any other
-/// change — so the scene tree is showing real document state, not a mock.
+/// The document the shell opens with: `nguo_sewing`'s two-panel block, **sewn**.
 ///
-/// ponytail: rectangles, because the shell is what is under test here, not
-/// drafting. Replace with a real block once `file.open` exists.
+/// It used to be four unsewn rectangles authored here. It is not any more, and the
+/// difference is the milestone: a document with no seams cannot be draped, so the
+/// opening document being sewable is what makes pressing Space do something on a
+/// fresh launch.
+///
+/// It lives in `nguo-sewing` rather than here because three callers need the *same*
+/// garment — this shell, the end-to-end integration test, and the golden drape —
+/// and a golden that authors its own geometry is testing the test.
+///
+/// ponytail: still rectangles. Replace with a real block once `file.open` exists;
+/// what a rectangle cannot exercise is curved seam correspondence, and
+/// `nguo_sewing::correspond`'s own tests cover that without a document.
 pub fn sample_document() -> Document {
-    use nguo_doc::pattern::{EdgeGeom, EdgeSemantic};
-
-    let mut doc = Document::new();
-    let meta = nguo_doc::Metadata {
-        name: "Bodice block".into(),
-        ..doc.meta().clone()
-    };
-    doc.apply_edit(Edit::SetMetadata {
-        meta: Box::new(meta),
-    })
-    .expect("metadata edit is always valid");
-
-    for (name, x) in [("Front bodice", 0.0), ("Back bodice", 420.0)] {
-        let mut piece = nguo_doc::Piece::new(name);
-        let corners = [(x, 0.0), (x + 380.0, 0.0), (x + 380.0, 560.0), (x, 560.0)];
-        let vertices: Vec<_> = corners
-            .iter()
-            .map(|&(vx, vy)| {
-                piece
-                    .network
-                    .add_vertex(nguo_doc::kurbo::Point::new(vx, vy))
-            })
-            .collect();
-        for i in 0..vertices.len() {
-            piece
-                .network
-                .add_edge(
-                    vertices[i],
-                    vertices[(i + 1) % vertices.len()],
-                    EdgeGeom::Line,
-                    EdgeSemantic::Seam,
-                )
-                .expect("both vertices were just added");
-        }
-
-        doc.apply_edit(Edit::AddPiece {
-            id: doc.next_piece_id(),
-            piece: Box::new(piece),
-        })
-        .expect("AddPiece at the planned id is always valid");
-    }
-
-    doc
+    nguo_sewing::sample::bodice_block()
 }
 
 #[cfg(test)]

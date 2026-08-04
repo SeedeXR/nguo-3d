@@ -1,0 +1,21 @@
+{
+  "bounds_max_mm": [
+    178.2535,
+    1300.0,
+    178.2535
+  ],
+  "bounds_min_mm": [
+    -178.2535,
+    739.9999,
+    -178.2535
+  ],
+  "checksum": "08617cb800d033d1",
+  "circumference_mm": 1120.0,
+  "max_seam_gap_mm": 0.0,
+  "radius_mm": 178.2535,
+  "seams": 2,
+  "slack_mm": 0.0,
+  "stitches": 40,
+  "triangles": 2510,
+  "vertices": 1333
+}

@@ -342,10 +342,19 @@ pub fn edge_triangle_intersect(e0: Vec3, e1: Vec3, v0: Vec3, v1: Vec3, v2: Vec3)
 /// distance so the bound stays both conservative and tight. `d_minus_target` uses
 /// the numerically stable `(d²−target²)/(√d²+target)` form. Translation-centering
 /// (`accd.hpp:14-24`) is skipped — it only affects fp32 rounding, not the result.
+///
+/// **The stencil is exactly four points**, and that is in the type rather than a comment
+/// because the `Vec` this used to build was the solver's single most frequent heap
+/// allocation. It is called once per candidate pair, per CCD widening pass, per Newton
+/// iteration: measured with `MGUSO_MEM_TRACE=1` on 5 041 cloth vertices over the male COL
+/// proxy, ONE step allocated 2 085 405 times and **1 926 000 of those (92%) fell between
+/// `post-solve` and `post-ccd`**, which is this function's 48-byte `x0.to_vec()`. Every
+/// caller already held a `[Vec3; 4]` (vertex + triangle, or two edges), so the array
+/// signature costs nothing and the working buffer lives on the stack.
 #[allow(clippy::too_many_arguments)]
 pub fn accd_toi(
-    x0: &[Vec3],
-    dx: &[Vec3],
+    x0: &[Vec3; 4],
+    dx: &[Vec3; 4],
     offset: f32,
     max_t: f32,
     reduction: f32,
@@ -371,9 +380,9 @@ pub fn accd_toi(
     let target = eps + offset;
     let eps_sqr = eps * eps;
     let mut toi = 0.0f32;
-    let mut moved = x0.to_vec();
+    let mut moved = *x0; // stack, not heap — see the note on the stencil size above
     for _ in 0..max_iter {
-        for k in 0..x0.len() {
+        for k in 0..4 {
             moved[k] = x0[k] + dx[k] * toi;
         }
         let d2 = square_dist(&moved).max(0.0);
@@ -803,6 +812,44 @@ pub fn point_tri_distance_grad(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (f32, [Vec
     }
     let n = e / d;
     (d, [n, -w[0] * n, -w[1] * n, -w[2] * n])
+}
+
+/// Point-triangle gap **signed by which side of the triangle `p` lies on**, plus its
+/// gradient w.r.t. `[p,a,b,c]`. The magnitude is the true unsigned distance (exactly
+/// [`point_tri_distance_grad`]); the sign is that of `(p − q)·((b−a)×(c−a))`, positive on
+/// the triangle's normal side. For a CLOSED, OUTWARD-ORIENTED mesh that is the surface's
+/// signed distance field near the surface.
+///
+/// This is what a **static body collider** needs and the unsigned distance cannot give.
+/// The unsigned gradient points away from the surface *on whichever side `p` already is*,
+/// so a cloth vertex starting even micrometres inside a body is repelled deeper and the
+/// garment falls straight through — silently, with no non-finite value to catch. With the
+/// side carried in the sign, the same barrier pushes it back out (use [`cubic_barrier`]
+/// for the negative branch; the log barrier is undefined there).
+///
+/// Outside (`gap > 0`) it returns bit-identically what [`point_tri_distance_grad`]
+/// returns, so non-penetrating contact is untouched.
+///
+/// Not for cloth-cloth self-collision: two cloth sheets have no consistent "outside", and
+/// CCD is what keeps them from crossing. Wiring a signed barrier into cloth-cloth contact
+/// was attempted and reverted because it regressed — see the `#[ignore]` reason on
+/// `implicit.rs`'s parallel-sheet slam test.
+pub fn signed_point_tri_distance_grad(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (f32, [Vec3; 4]) {
+    let (q, w) = closest_point_on_triangle_bary(p, a, b, c);
+    let e = p - q;
+    let d = e.length();
+    if d < 1.0e-12 {
+        return (d, [Vec3::ZERO; 4]); // coincident: not differentiable, and side is undefined
+    }
+    // A zero-area triangle has no side, so its cross product is zero and the dot is too —
+    // `>= 0` keeps such a stencil on the unsigned branch rather than flipping it randomly.
+    let s = if e.dot((b - a).cross(c - a)) < 0.0 {
+        -1.0
+    } else {
+        1.0
+    };
+    let n = (s / d) * e;
+    (s * d, [n, -w[0] * n, -w[1] * n, -w[2] * n])
 }
 
 /// Per-contact **dynamic** stiffness — a pragmatic port of the reference
@@ -1585,6 +1632,59 @@ mod tests {
             v1,
             v2,
         ));
+    }
+
+    /// The signed variant must agree EXACTLY with the unsigned one on the normal side
+    /// (that is the no-regression claim for non-penetrating contact) and negate both the
+    /// gap and the gradient on the back side — so the barrier force, `−b′(g)·∂g/∂p`, points
+    /// back towards the surface from either side instead of away from it.
+    #[test]
+    fn signed_point_triangle_negates_gap_and_gradient_behind_the_triangle() {
+        // Counter-clockwise in the xz plane seen from +y ⇒ normal +Y.
+        let (a, b, c) = (
+            Vec3::new(-1.0, 0.0, -1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, -1.0),
+        );
+        assert!(
+            (b - a).cross(c - a).y > 0.0,
+            "fixture is wound the wrong way"
+        );
+
+        for &p in &[
+            Vec3::new(0.0, 0.3, 0.0),    // over the face
+            Vec3::new(0.05, 0.001, 0.1), // grazing the face
+            Vec3::new(3.0, 0.2, 0.0),    // off to the side, closest feature is an edge
+        ] {
+            let (du, gu) = point_tri_distance_grad(p, a, b, c);
+            let (ds, gs) = signed_point_tri_distance_grad(p, a, b, c);
+            assert_eq!(du, ds, "outside: signed gap must be the unsigned distance");
+            assert_eq!(gu, gs, "outside: signed gradient must be untouched");
+
+            // Mirror through the plane: same distance, opposite sign, opposite gradient.
+            let q = Vec3::new(p.x, -p.y, p.z);
+            let (dm, gm) = signed_point_tri_distance_grad(q, a, b, c);
+            assert!(
+                (dm + du).abs() < 1e-6,
+                "inside: gap {dm} should be −{du} for the mirrored point {q}"
+            );
+            // The force on the point is −b′·∂g/∂p with b′ < 0, i.e. along ∂g/∂p. It must
+            // point UP (back out) from below, exactly as it points up from above.
+            assert!(
+                gm[0].y > 0.0,
+                "inside: push at {q} is {}, not outward",
+                gm[0]
+            );
+            assert!(
+                gu[0].y > 0.0,
+                "outside: push at {p} is {}, not outward",
+                gu[0]
+            );
+        }
+
+        // A zero-area triangle has no side; it must not flip anything.
+        let (dz, _) = signed_point_tri_distance_grad(Vec3::new(0.0, -1.0, 0.0), a, a, a);
+        assert!(dz > 0.0, "degenerate triangle produced a signed gap {dz}");
     }
 
     #[test]

@@ -11,6 +11,7 @@
 
 mod avatar;
 mod command;
+mod drape;
 mod shell;
 
 use std::collections::BTreeSet;
@@ -19,6 +20,7 @@ use std::time::Instant;
 use iced::widget::{button, column, container, row, space, stack, text, text_input};
 use iced::{Element, Length, Subscription, Task};
 use nguo_canvas::Canvas;
+use nguo_engine_bridge::Tier;
 use nguo_gpu::stats::FrameStats;
 use nguo_keymap::{CommandId, Context, Keymap, Resolution, Resolver};
 use nguo_registry::Snapshot;
@@ -128,14 +130,30 @@ struct App {
     focus_label: String,
     process_label: String,
     fps_label: String,
+    /// The drape's own read-out. A `String` for the same reason the three above
+    /// are: `status_item` borrows `&'a str`, so it is recomputed once per tick in
+    /// `update` rather than allocated inside `view`.
+    drape_label: String,
 
     /// The body in the viewport and behind the pattern canvas. `None` when
     /// `assets/avatars/` is absent — the assets are not in every clone, so a
     /// missing bundle is a toast and a fallback, never a failure to start.
     avatars: Option<avatar::Avatars>,
 
+    /// The drape: bridge, garment and the streamed mesh. `None` only if the OS
+    /// refused a thread pool — the shell still runs, it just cannot simulate.
+    drape: Option<drape::Drape>,
+
     camera: Camera,
     canvas_view: nguo_canvas::View,
+    /// The document renderer for the 2D pane, holding the piece scene cache.
+    ///
+    /// `Mutex` because `shader::Program::draw` takes `&self` while
+    /// `Canvas2d::frame` needs `&mut` for its cache, and `draw` is the only
+    /// place the pane's real pixel size is known. Uncontended — one lock per
+    /// frame on the UI thread — and it is what keeps `piece_builds` from
+    /// climbing once per frame.
+    canvas2d: std::sync::Mutex<nguo_canvas::Canvas2d>,
     canvas_pick: Option<Point>,
     viewport_pick: Option<glam::Vec3>,
     stats: FrameStats,
@@ -176,6 +194,20 @@ impl App {
                 None
             }
         };
+        // The drape worker, before the window: `EngineBridge::new` spawns onto a
+        // runtime, and a runtime built after the first `view()` would have
+        // nowhere to put a submission made from the toolbar.
+        let drape = match drape::Drape::new() {
+            Ok(drape) => {
+                stages.push("drape worker");
+                Some(drape)
+            }
+            Err(error) => {
+                tracing::error!(target: "nguo_app", %error, "no drape worker; simulation disabled");
+                None
+            }
+        };
+
         let mut camera = Camera::default();
         let mut canvas_view = nguo_canvas::View::default();
         if let Some(avatars) = &avatars {
@@ -192,6 +224,7 @@ impl App {
             focus_label: focus_name(Context::Canvas2d).to_owned(),
             process_label: "no active process".to_owned(),
             fps_label: "— fps".to_owned(),
+            drape_label: drape_label(drape.as_ref()),
             doc,
             scene_rows,
             layout,
@@ -207,8 +240,10 @@ impl App {
             dismissed: BTreeSet::new(),
             simulating: false,
             avatars,
+            drape,
             camera,
             canvas_view,
+            canvas2d: std::sync::Mutex::new(nguo_canvas::Canvas2d::new()),
             canvas_pick: None,
             viewport_pick: None,
             stats: FrameStats::default(),
@@ -227,12 +262,11 @@ impl App {
         (w > 0 && scale > 0.0).then(|| w as f32 / scale)
     }
 
-    fn solver_state(&self) -> &'static str {
-        if self.simulating {
-            "simulating"
-        } else {
-            "idle"
-        }
+    /// What the status bar says about the solver. Read off the drape rather than
+    /// off the toolbar toggle, so it cannot claim to be simulating when nothing
+    /// is (`sim.toggle` is a request; this is the fact).
+    fn solver_state(&self) -> &str {
+        &self.drape_label
     }
 }
 
@@ -246,6 +280,14 @@ impl App {
 fn report_avatar_failure(error: &nguo_avatar::AvatarError) {
     tracing::warn!(target: "nguo_app", %error, "avatar unavailable");
     let _ = nguo_registry::start(nguo_registry::feature_const("viewport.render"), 0).failed(error);
+}
+
+/// One line about the drape, for the status bar.
+fn drape_label(drape: Option<&drape::Drape>) -> String {
+    match drape {
+        None => "no solver".to_owned(),
+        Some(drape) => drape.report.line(),
+    }
 }
 
 fn focus_name(focus: Context) -> &'static str {
@@ -277,6 +319,13 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 app.stats.fps(),
                 app.stats.frame_ms()
             );
+            // Drain the solver before the frame that will draw it. The redraw is
+            // already scheduled — `frames()` gave us this tick — so a new frame
+            // needs no extra request.
+            if let Some(drape) = &mut app.drape {
+                drape.poll();
+            }
+            app.drape_label = drape_label(app.drape.as_ref());
 
             let dismissed = if let Phase::Booting(splash) = &mut app.phase {
                 boot_progress(splash, &app.stages);
@@ -440,27 +489,43 @@ fn boot_progress(splash: &mut Splash, stages: &[&'static str]) {
 fn promote_to_shell(app: &mut App) -> Task<Message> {
     app.phase = Phase::Running;
 
-    iced::window::latest().and_then(|id| {
-        Task::batch([
-            // A toggle, not a setter, in 0.14 — safe because this runs exactly
-            // once: `Phase` never goes back to `Booting`.
-            iced::window::toggle_decorations(id),
-            iced::window::set_resizable(id, true),
-            iced::window::set_level(id, iced::window::Level::Normal),
-            iced::window::resize(id, SHELL_SIZE),
-            // winit keeps the top-left corner where it was, so a panel centred
-            // at 900x534 would hang off the bottom-right at 1440x900.
-            iced::window::monitor_size(id).and_then(move |monitor| {
-                iced::window::move_to(
-                    id,
-                    iced::Point::new(
-                        ((monitor.width - SHELL_SIZE.width) / 2.0).max(0.0),
-                        ((monitor.height - SHELL_SIZE.height) / 2.0).max(0.0),
-                    ),
-                )
-            }),
-        ])
-    })
+    // `NGUO_AUTODRAPE=1`: submit the opening document's drape as soon as the shell
+    // is up, exactly as pressing Space would. It exists because there is no way to
+    // press Space from a script on this machine — `osascript` has no assistive
+    // access — and a capture run has to be able to photograph a *drape*, not an
+    // idle window. It routes through `dispatch`, so it cannot drift from what the
+    // key does.
+    let autodrape = if std::env::var_os("NGUO_AUTODRAPE").is_some() {
+        tracing::info!(target: "nguo_app", "NGUO_AUTODRAPE: submitting the opening drape");
+        dispatch(app, CommandId::from("sim.toggle"))
+    } else {
+        Task::none()
+    };
+
+    Task::batch([
+        autodrape,
+        iced::window::latest().and_then(|id| {
+            Task::batch([
+                // A toggle, not a setter, in 0.14 — safe because this runs exactly
+                // once: `Phase` never goes back to `Booting`.
+                iced::window::toggle_decorations(id),
+                iced::window::set_resizable(id, true),
+                iced::window::set_level(id, iced::window::Level::Normal),
+                iced::window::resize(id, SHELL_SIZE),
+                // winit keeps the top-left corner where it was, so a panel centred
+                // at 900x534 would hang off the bottom-right at 1440x900.
+                iced::window::monitor_size(id).and_then(move |monitor| {
+                    iced::window::move_to(
+                        id,
+                        iced::Point::new(
+                            ((monitor.width - SHELL_SIZE.width) / 2.0).max(0.0),
+                            ((monitor.height - SHELL_SIZE.height) / 2.0).max(0.0),
+                        ),
+                    )
+                }),
+            ])
+        }),
+    ])
 }
 
 /// Capture the app's own framebuffer at two fixed frames — one with the splash
@@ -470,17 +535,33 @@ fn promote_to_shell(app: &mut App) -> Task<Message> {
 /// screen; `iced::window::screenshot` reads our surface directly and cannot
 /// (SPLASH.md §5). Off by default, so it costs one integer compare per frame.
 ///
-// ponytail: two hardcoded frame numbers, not a schedule. If a third capture
-// point is ever wanted, pass the frame list through the env var.
+/// `NGUO_CAPTURE_FRAMES` is a comma-separated frame list, defaulting to
+/// `120,1000` — the splash and the settled shell. The frame *list* rather than two
+/// constants is now earned rather than speculative: a drape takes seconds and
+/// looking at it needs several frames across that span, which is what
+/// `--features debug-overlay` runs use.
 fn capture(frames: u64, running: bool) -> Option<Task<Message>> {
+    std::env::var_os("NGUO_CAPTURE")?;
+    let wanted: Vec<u64> = match std::env::var("NGUO_CAPTURE_FRAMES") {
+        Ok(list) => list
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect(),
+        Err(_) => vec![120, 1000],
+    };
+    if !wanted.contains(&frames) {
+        return None;
+    }
     // The splash holds for 4 s; the phase, not the frame number, decides which
     // is which, because the frame rate is not 60 Hz here.
-    let tag = match (frames, running) {
-        (120, false) => "splash",
-        (1000, true) => "shell",
-        _ => return None,
+    let tag: &'static str = if running {
+        // Leaked deliberately and exactly once per captured frame: `Message` is
+        // `Clone` and iced requires `'static`, and a handful of tags over a
+        // process lifetime is not a leak that matters.
+        Box::leak(format!("shell-{frames}").into_boxed_str())
+    } else {
+        "splash"
     };
-    std::env::var_os("NGUO_CAPTURE")?;
     Some(
         iced::window::latest()
             .and_then(iced::window::screenshot)
@@ -560,7 +641,20 @@ fn dispatch(app: &mut App, id: CommandId) -> Task<Message> {
                 _ => Context::Viewport3d,
             };
         }
-        "sim.toggle" => app.simulating = !app.simulating,
+        // The one command that makes M6 happen: sew the document and drape it.
+        // A second press cancels, because a 30-second bake with no way to stop it
+        // is a hung application.
+        "sim.toggle" => {
+            app.simulating = !app.simulating;
+            if let Some(drape) = &mut app.drape {
+                if app.simulating {
+                    let (arrange, proxy) = drape_inputs(&mut app.avatars, &app.doc);
+                    drape.submit(&app.doc, arrange, proxy.as_deref(), Tier::Preview);
+                } else {
+                    drape.cancel();
+                }
+            }
+        }
         "panel.library" => app
             .layout
             .update(DockEvent::CollapseToggled(shell::SCENE.into())),
@@ -592,6 +686,35 @@ fn dispatch(app: &mut App, id: CommandId) -> Task<Message> {
         }
     }
     Task::none()
+}
+
+/// The two things a drape needs off the avatar: how to arrange the panels around
+/// it, and the collision proxy to drape over.
+///
+/// Both degrade rather than fail. No bundle, or a proxy that will not load, means
+/// `nguo_sewing`'s own defaults and a gravity-only drape — reported in the status
+/// line, never pretended away.
+fn drape_inputs(
+    avatars: &mut Option<avatar::Avatars>,
+    doc: &nguo_doc::Document,
+) -> (
+    nguo_sewing::ArrangeOptions,
+    Option<std::sync::Arc<avatar::CollisionProxy>>,
+) {
+    let Some(avatars) = avatars.as_mut() else {
+        return (nguo_sewing::ArrangeOptions::default(), None);
+    };
+    // The document decides which landmark it hangs at; the body decides where
+    // that landmark is.
+    let arrange = avatars.arrange_options(&nguo_sewing::hang(doc));
+    let proxy = match avatars.collider() {
+        Ok(proxy) => Some(proxy),
+        Err(error) => {
+            report_avatar_failure(&error);
+            None
+        }
+    };
+    (arrange, proxy)
 }
 
 /// `avatar.body.{male,female}` / `avatar.tone.MST01..MST10`.
@@ -699,6 +822,9 @@ fn panel_body<'a>(app: &'a App, _panel: &Panel, tab: &Tab) -> Element<'a, Messag
                     pick: app.canvas_pick,
                 },
                 paper: app.paper.color.canvas,
+                doc: &app.doc,
+                tokens: &app.paper,
+                canvas2d: &app.canvas2d,
                 // A ghosted body behind the draft (UX_SPEC §2).
                 // `border_strong` and not `guide`: the canvas entity roles are
                 // the chromatic tokens (UX_SPEC §2) and a violet body would
@@ -720,6 +846,7 @@ fn panel_body<'a>(app: &'a App, _panel: &Panel, tab: &Tab) -> Element<'a, Messag
                 camera: app.camera,
                 time: app.time,
                 avatar: app.avatars.as_ref().map(|a| a.viewport()),
+                garment: app.drape.as_ref().and_then(drape::Drape::viewport),
             })
             .width(Length::Fill)
             .height(Length::Fill),
@@ -766,6 +893,8 @@ fn properties(app: &App) -> Element<'_, Message> {
         }
     }
 
+    rows.extend(seam_rows(app));
+    rows.extend(drape_rows(app));
     rows.extend(avatar_picker(app));
 
     rows.push(w::section_header(t, "Document", Some(Icon::Garment)));
@@ -786,6 +915,178 @@ fn properties(app: &App) -> Element<'_, Message> {
     }
 
     w::inspector(t, rows)
+}
+
+/// What the last drape produced. Empty until one has been submitted — a panel of
+/// zeroes would read as a garment with no geometry.
+///
+/// Every number here is measured by the code that did the work
+/// (`nguo_sewing::Timings`, and the engine's own `median_step_s`), never derived
+/// or estimated here.
+fn drape_rows(app: &App) -> Vec<Element<'_, Message>> {
+    let t = &app.tokens;
+    let Some(report) = app.drape.as_ref().map(|d| &d.report) else {
+        return Vec::new();
+    };
+    if report.message.is_empty() {
+        return Vec::new();
+    }
+
+    let mut rows = vec![w::section_header(t, "Drape", Some(Icon::Play))];
+    let sew = &report.sew;
+    for (label, value) in [
+        ("Vertices", report.vertices.to_string()),
+        ("Triangles", report.triangles.to_string()),
+        ("Stitches", report.stitches.to_string()),
+        (
+            "Seams open",
+            format!("{:.1} mm", report.seam_gap_m * 1000.0),
+        ),
+        ("Frames", report.frames.to_string()),
+        (
+            "Sew",
+            format!(
+                "{:.1} ms (tri {:.1} · sew {:.1})",
+                sew.total_ms(),
+                sew.triangulate_ms,
+                sew.sew_ms
+            ),
+        ),
+        (
+            "Solver",
+            match report.step_s {
+                Some(s) => format!("{:.0} ms/step", s * 1000.0),
+                None => "running…".to_owned(),
+            },
+        ),
+    ] {
+        rows.push(w::property_row(
+            t,
+            label,
+            text(value)
+                .size(t.text.small)
+                .color(w::color(t.color.text_primary)),
+        ));
+    }
+    rows
+}
+
+/// Seam health, recomputed from the document every time this panel is drawn.
+///
+/// `ui/docs/UX_SPEC.md` §1: seam validation is a **maintained constraint**, not a
+/// command. There is deliberately no "Check Sewing Length" menu item — the panel
+/// simply always tells the truth about the document in front of you, so an unsewn
+/// edge or a 2× length mismatch is visible while it is being drafted rather than
+/// discovered by pressing Space and being refused a drape.
+///
+/// Recomputed rather than cached against `Document::revision`. That is the lazy
+/// choice *and* the correct one: `nguo_sewing::validate` is a pure function of the
+/// document measured at **1.1 µs/call** with 4 diagnostics
+/// (`nguo_sewing::validate::tests::validation_is_cheap_enough_to_run_on_every_revision`,
+/// which prints the number to fd 2), i.e. 0.013 % of the 8.3 ms frame budget. A
+/// revision cache would be more code and one more thing that can go stale — the
+/// exact failure mode a maintained constraint exists to prevent.
+/// The seam status line. Split out from [`seam_rows`] because the panel's
+/// verdict is the part worth testing and an `Element` cannot be inspected —
+/// the colour beside it branches on the same two counts.
+///
+/// "to fix before draping" rather than "invalid": an error here is actionable and
+/// never fatal, and the per-diagnostic rows below say what to do.
+fn seam_status(seams: usize, errors: usize, warnings: usize) -> String {
+    let verdict = if errors > 0 {
+        format!("{errors} to fix before draping")
+    } else if warnings > 0 {
+        format!("{warnings} to check")
+    } else {
+        "ready to drape".to_owned()
+    };
+    format!("{seams} sewn · {verdict}")
+}
+
+/// How many diagnostic rows the panel shows before it starts counting the rest.
+/// A draft mid-edit can earn dozens of "unsewn edge" warnings and a 40-row panel
+/// is one nobody reads.
+const MAX_SEAM_ROWS: usize = 6;
+
+/// The diagnostics the panel shows, most actionable first.
+///
+/// The ordering is load-bearing, not cosmetic: [`seam_rows`] shows only the first
+/// [`MAX_SEAM_ROWS`], so an error that sorts below a pile of "unsewn edge"
+/// warnings is an error nobody sees. `Severity` orders `Error < Warning < Info`
+/// and the sort is **stable**, so this lifts the actionable rows while keeping
+/// `validate`'s document order within each severity — a list that reshuffles
+/// frame to frame is unreadable in a panel.
+///
+/// A seam whose two sides match to the displayed precision is dropped: its row
+/// reads "the two sides differ by +0.0 % of their length", which is four lines of
+/// panel saying nothing, and on the shipped two-seam sample it filled a third of
+/// the cap. `validate` still reports it — this is the *panel's* editorial choice,
+/// not a change to the constraint, so anything else consuming the diagnostics
+/// still sees the complete set. Ease worth naming still shows, because the
+/// threshold is exactly the point at which the sentence stops reading `+0.0 %`.
+fn seam_diagnostics(doc: &nguo_doc::Document) -> Vec<nguo_sewing::Diagnostic> {
+    /// `{:+.1} %` of `(ratio - 1) * 100` renders as `0.0` below this.
+    const SHOWS_AS_ZERO: f64 = 0.000_5;
+    let mut diagnostics = nguo_sewing::validate(doc);
+    diagnostics.retain(|d| match d.kind {
+        nguo_sewing::Kind::Ease { ratio, .. } => (ratio - 1.0).abs() >= SHOWS_AS_ZERO,
+        _ => true,
+    });
+    diagnostics.sort_by_key(|d| d.severity);
+    diagnostics
+}
+
+fn seam_rows(app: &App) -> Vec<Element<'_, Message>> {
+    let t = &app.tokens;
+    if app.doc.pieces().is_empty() {
+        return Vec::new();
+    }
+
+    let diagnostics = seam_diagnostics(&app.doc);
+    let (errors, warnings, _) = nguo_sewing::counts(&diagnostics);
+
+    let mut rows = vec![w::section_header(t, "Seams", Some(Icon::Seam))];
+    rows.push(w::property_row(
+        t,
+        "Status",
+        text(seam_status(app.doc.seams().len(), errors, warnings))
+            .size(t.text.small)
+            .color(w::color(if errors > 0 {
+                t.color.error
+            } else if warnings > 0 {
+                t.color.warning
+            } else {
+                t.color.success
+            })),
+    ));
+
+    // Capped, with the remainder counted rather than dropped silently.
+    for d in diagnostics.iter().take(MAX_SEAM_ROWS) {
+        let (label, tone) = match d.severity {
+            nguo_sewing::Severity::Error => ("Error", t.color.error),
+            nguo_sewing::Severity::Warning => ("Warning", t.color.warning),
+            nguo_sewing::Severity::Info => ("Ease", t.color.text_secondary),
+        };
+        rows.push(w::property_row(
+            t,
+            label,
+            text(d.message()).size(t.text.small).color(w::color(tone)),
+        ));
+    }
+    if let Some(more) = diagnostics
+        .len()
+        .checked_sub(MAX_SEAM_ROWS)
+        .filter(|n| *n > 0)
+    {
+        rows.push(w::property_row(
+            t,
+            "",
+            text(format!("…and {more} more"))
+                .size(t.text.small)
+                .color(w::color(t.color.text_muted)),
+        ));
+    }
+    rows
 }
 
 /// Body and skin-tone pickers (UX_SPEC §3.2). Every control emits the same
@@ -1113,6 +1414,17 @@ struct PatternCanvas<'a> {
     inner: Canvas,
     paper: nguo_ui_theme::Rgba,
     ghost: Option<(&'a vello::kurbo::BezPath, nguo_ui_theme::Rgba)>,
+    /// The document to draw. `nguo_canvas::build_scene` — which is what
+    /// `Canvas::draw` calls — renders a hardcoded `petal()` blob that its own
+    /// docs describe as standing in for a pattern piece, so wiring the shell to
+    /// it showed placeholder art in a pane labelled "2D Pattern" while the
+    /// *same* document sewed and draped correctly in 3D. `Canvas2d::frame` is
+    /// the real document renderer; this is what hands it the document.
+    doc: &'a nguo_doc::Document,
+    /// The light token set (`App::paper`), not the shell's dark one: the pattern
+    /// is drawn dark-on-light (UX_SPEC §2).
+    tokens: &'a Tokens,
+    canvas2d: &'a std::sync::Mutex<nguo_canvas::Canvas2d>,
 }
 
 impl iced::widget::shader::Program<nguo_canvas::Action> for PatternCanvas<'_> {
@@ -1135,31 +1447,66 @@ impl iced::widget::shader::Program<nguo_canvas::Action> for PatternCanvas<'_> {
         cursor: iced::mouse::Cursor,
         bounds: iced::Rectangle,
     ) -> Self::Primitive {
+        let _ = (state, cursor);
         let c = self.paper;
         let base_color = vello::peniko::Color::new([c.r, c.g, c.b, c.a]);
-        let drafted = self.inner.draw(state, cursor, bounds);
+        let size = vello::kurbo::Vec2::new(bounds.width as f64, bounds.height as f64);
 
-        let Some((outline, ink)) = self.ghost else {
-            return nguo_gpu::canvas::ScenePrimitive {
-                base_color,
-                ..drafted
-            };
-        };
-
-        // Logical units and scale factor 1.0 — the primitive applies HiDPI, so
-        // this has to match what `Canvas::draw` did (guide §2.4).
+        // Logical units and scale factor 1.0 — the primitive applies HiDPI
+        // (guide §2.4). Order matters: the ghost is ground, the draft is figure.
         let mut scene = vello::Scene::new();
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            self.inner.view.scene_transform(
-                vello::kurbo::Vec2::new(bounds.width as f64, bounds.height as f64),
-                1.0,
-            ),
-            vello::peniko::Color::new([ink.r, ink.g, ink.b, ink.a]),
-            None,
-            outline,
-        );
-        scene.append(&drafted.scene, None);
+        if let Some((outline, ink)) = self.ghost {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                self.inner.view.scene_transform(size, 1.0),
+                vello::peniko::Color::new([ink.r, ink.g, ink.b, ink.a]),
+                None,
+                outline,
+            );
+        }
+
+        // The document itself: grid, pieces, selection. `App::canvas_view` stays
+        // the single source of truth for pan/zoom — the `Action`s in `update`
+        // write it, so it is copied in here rather than mutated on both sides.
+        let drafted = match self.canvas2d.lock() {
+            Ok(mut canvas) => {
+                canvas.view = self.inner.view;
+                Some(canvas.frame(self.doc, size, self.tokens))
+            }
+            // A poisoned lock means a previous `draw` panicked. Losing the draft
+            // for a frame is not worth taking the whole shell down for.
+            Err(error) => {
+                tracing::error!(target: "nguo_app", %error, "the canvas cache is poisoned");
+                None
+            }
+        };
+        if let Some(drafted) = &drafted {
+            scene.append(drafted, None);
+        }
+
+        // The pick crosshair, in screen space at a fixed size so it stays
+        // legible at any zoom. `build_scene` used to draw this; it is kept
+        // because it is the visible proof that hit-testing is right on a Retina
+        // display, which is a claim no other pixel on screen makes.
+        if let Some(pick) = self.inner.pick {
+            let at = self.inner.view.scene_transform(size, 1.0) * pick;
+            let mut cross = vello::kurbo::BezPath::new();
+            cross.move_to((at.x - 12.0, at.y));
+            cross.line_to((at.x + 12.0, at.y));
+            cross.move_to((at.x, at.y - 12.0));
+            cross.line_to((at.x, at.y + 12.0));
+            let m = self.tokens.color.dart;
+            let mark = vello::peniko::Color::new([m.r, m.g, m.b, m.a]);
+            let stroke = vello::kurbo::Stroke::new(1.5);
+            scene.stroke(&stroke, vello::kurbo::Affine::IDENTITY, mark, None, &cross);
+            scene.stroke(
+                &stroke,
+                vello::kurbo::Affine::IDENTITY,
+                mark,
+                None,
+                &vello::kurbo::Circle::new(at, 5.0),
+            );
+        }
 
         nguo_gpu::canvas::ScenePrimitive {
             scene: std::sync::Arc::new(scene),
@@ -1276,6 +1623,124 @@ mod tests {
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]
     struct Boom(&'static str, #[source] Option<Box<Boom>>);
+
+    /// The status line's three verdicts, and that an error outranks a warning.
+    /// It is the one sentence that tells a drafter whether Space will work.
+    #[test]
+    fn the_seam_status_line_leads_with_whatever_is_most_actionable() {
+        assert_eq!(seam_status(2, 0, 0), "2 sewn · ready to drape");
+        assert_eq!(seam_status(2, 0, 3), "2 sewn · 3 to check");
+        assert_eq!(seam_status(2, 1, 3), "2 sewn · 1 to fix before draping");
+        // No seams at all is a legitimate draft, not a zero-state to hide.
+        assert_eq!(seam_status(0, 0, 0), "0 sewn · ready to drape");
+    }
+
+    /// The maintained constraint itself (UX_SPEC §1), through the panel's own
+    /// pipeline: the shipped sample must be clean, and a document whose seam
+    /// sides differ by 2× must earn an `Error` that sorts to the **front** — the
+    /// panel caps at six rows, so a mis-sorted error is an invisible one.
+    ///
+    /// This is the assertion that fails if `seam_rows` ever stops sorting, which
+    /// no test of `nguo_sewing` alone would catch.
+    #[test]
+    fn seam_diagnostics_sort_errors_first_so_the_row_cap_cannot_hide_one() {
+        let clean = nguo_sewing::validate(&shell::sample_document());
+        let (errors, warnings, infos) = nguo_sewing::counts(&clean);
+        assert_eq!(
+            (errors, warnings),
+            (0, 0),
+            "the shipped sample must open clean: {:?}",
+            clean.iter().map(|d| d.message()).collect::<Vec<_>>(),
+        );
+        assert!(infos > 0, "an ease report per seam is expected");
+        assert_eq!(seam_status(2, errors, warnings), "2 sewn · ready to drape");
+        // ...and the panel shows no rows at all for it: two "differ by +0.0 %"
+        // lines are four lines of panel saying nothing.
+        assert!(
+            seam_diagnostics(&shell::sample_document()).is_empty(),
+            "the clean sample should earn a status line and nothing else: {:?}",
+            seam_diagnostics(&shell::sample_document())
+                .iter()
+                .map(|d| d.message())
+                .collect::<Vec<_>>(),
+        );
+
+        // Drag one panel's bottom corner far below the hem: that side edge grows
+        // to 3× its partner's, past `EASE_LIMIT`, so it stops being ease and
+        // becomes an actionable error.
+        let mut doc = shell::sample_document();
+        let piece = doc.pieces().ids().next().expect("the sample has pieces");
+        let (vertex, at) = doc
+            .piece(piece)
+            .expect("piece")
+            .network
+            .vertices
+            .iter()
+            .max_by(|a, b| a.1.pos.y.total_cmp(&b.1.pos.y))
+            .map(|(id, v)| (id, v.pos))
+            .expect("the panel has vertices");
+        doc.apply_edit(nguo_doc::Edit::MoveVertex {
+            piece,
+            id: vertex,
+            pos: nguo_doc::kurbo::Point::new(at.x, at.y + 2.0 * nguo_sewing::sample::PANEL_H_MM),
+        })
+        .expect("moving a vertex is always a valid edit");
+
+        // The panel's own pipeline, not a local re-sort — so deleting the sort
+        // from `seam_diagnostics` fails this test rather than passing quietly.
+        let broken = seam_diagnostics(&doc);
+        let (errors, warnings, _) = nguo_sewing::counts(&broken);
+        assert!(
+            errors > 0,
+            "a 3x length mismatch must be an error, not silent ease: {:?}",
+            broken.iter().map(|d| d.message()).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            broken[0].severity,
+            nguo_sewing::Severity::Error,
+            "the error did not sort to the front: {:?}",
+            broken.iter().map(|d| d.message()).collect::<Vec<_>>(),
+        );
+        // The property the cap rests on: the errors occupy a solid prefix, so the
+        // first `MAX_SEAM_ROWS` rows can only omit an error once there are more
+        // than six of them. `validate` emits per-*piece* warnings before per-*seam*
+        // diagnostics, so unsorted this list starts with a warning and
+        // `first_other` is 0 — which is what makes deleting the sort fail here
+        // rather than pass quietly.
+        let first_other = broken
+            .iter()
+            .position(|d| d.severity != nguo_sewing::Severity::Error)
+            .unwrap_or(broken.len());
+        assert!(
+            warnings > 0,
+            "this document must earn a warning too, or the ordering assertion \
+             below cannot distinguish a sorted list from an unsorted one",
+        );
+        assert_eq!(
+            first_other,
+            errors,
+            "the errors are not a prefix — one sorted below a warning: {:?}",
+            broken
+                .iter()
+                .map(|d| (d.severity, d.message()))
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            errors <= MAX_SEAM_ROWS,
+            "{errors} errors against a {MAX_SEAM_ROWS}-row cap: one is unreachable",
+        );
+        // ...and it says what to *do*, not merely what is wrong.
+        let ease_error = broken
+            .iter()
+            .find(|d| d.severity == nguo_sewing::Severity::Error && d.message().contains("differ"))
+            .expect("the length mismatch is reported");
+        assert!(
+            ease_error.message().contains("gathered") && ease_error.message().contains("shorten"),
+            "not actionable: {}",
+            ease_error.message(),
+        );
+        assert!(seam_status(2, errors, 0).contains("to fix before draping"));
+    }
 
     #[test]
     fn the_status_bar_reads_a_snapshot_it_does_not_hold_a_lock_on() {

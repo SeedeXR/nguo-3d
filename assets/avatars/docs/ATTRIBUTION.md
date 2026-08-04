@@ -1,15 +1,32 @@
 # Attribution and licensing
 
-## Body meshes — Seede XR
+> **Corrected in place, 2026-08-03 — this is no longer the byte-identical
+> delivered copy.** As delivered, this file called the Seede XR modelling data
+> *proprietary*. The maintainer released it under **CC BY 4.0** on 2026-08-03, so
+> the licence rows and the notice section below were edited here rather than left
+> asserting a licence that no longer applies. Everything about **how the assets
+> were built** is untouched and is still what this file is for.
+>
+> **`../LICENSE.md` is the authority on what each component is licensed under.**
+> This file is the authority on the *facts of construction* and on the third-party
+> inputs. Where the two disagree about a licence, `../LICENSE.md` is right.
+
+## Body meshes — Seede XR, CC BY 4.0
 
 Both bodies (`male_character.blend`, `female_character.blend`) were modelled by
 **Seede XR**, who own them outright. Every avatar in this directory is a
 derivative of those sculpts and carries the same ownership.
 
+That ownership is what gives Seede XR standing to license the data onward, which
+it does: the meshes, rigs, weights, LODs, collision proxies, previews and the JSON
+describing them are licensed **CC BY 4.0**. **Attribution is therefore required**
+— including to Seede XR itself, because CC BY obliges naming the licensor, and a
+bare "© Seede XR" states ownership while omitting the grant. See `../LICENSE.md`.
+
 The pipeline never moves a surface vertex, so the shipped LOD0 **is** the Seede XR
 mesh: verified vertex-for-vertex against the original file to within 5.7e-7 m,
 which is float32 rounding on a metre-scale coordinate. See
-`docs/INTEGRATION.md` §10.
+[`INTEGRATION.md`](INTEGRATION.md) §10.
 
 ---
 
@@ -23,10 +40,7 @@ which is float32 rounding on a metre-scale coordinate. See
 | [cgbookcase.com](https://www.cgbookcase.com) — *human-skin1* set | reference / cross-check |
 
 Licensed **CC BY 4.0**. Attribution is therefore **required** wherever the
-avatars ship. A line such as the following satisfies it:
-
-> Skin textures based on material from texturecan.com and cgbookcase.com,
-> licensed CC BY 4.0.
+avatars ship; the consolidated notice named at the bottom of this file carries it.
 
 Note: texturecan's own site states CC0 for its library. The stricter CC BY 4.0
 terms are recorded here because that is what was specified for this project, and
@@ -40,29 +54,31 @@ colour map; the roughness map was remapped into a 0.35–0.75 skin window.
 
 The ten complexions follow the **Monk Skin Tone Scale**, created by
 **Dr Ellis Monk** in partnership with Google — <https://skintone.google>.
-Published under **CC BY 4.0**; attribution required.
-
-> Complexion range based on the Monk Skin Tone Scale by Ellis Monk
-> (CC BY 4.0).
+Published under **CC BY 4.0**; attribution required. The credit line must name
+**both Ellis Monk and Google**, because the scale was created in that partnership
+— that is the wording `nguo_avatar::MONK_ATTRIBUTION` carries.
 
 If the app ships a visible complexion picker, credit the scale in the UI or the
 about screen. The scale exists because 6-shade scales under-represent darker
 skin; crediting it is both a licence obligation and the point.
 
-### Animation — Adobe Mixamo
+### Animation — Adobe Mixamo: a limit on the manner of redistribution
 
-All 19 runway clips originate from **Adobe Mixamo** (`references/nguo-3d-mixamo-animations/`).
-Mixamo content is licensed to the Adobe account that downloaded it, royalty-free
-for use in projects, and **may not be redistributed as standalone animation
-data**.
+All 19 runway clips originate from **Adobe Mixamo** — downloaded to
+`references/nguo-3d-mixamo-animations/` in the upstream pipeline tree, which is not
+part of this repository; the baked clips inside the GLB/VRM are all that ships.
+Mixamo content is licensed to the Adobe account that downloaded it and is
+royalty-free for use in projects. Seede XR does not own it, so the CC BY 4.0 grant
+over the modelling data does not reach it — which bounds **how these files may be
+passed on**, and grants nothing away:
 
-That distinction matters for what is shipped here:
+- **May travel:** the avatars, with the retargeted motion baked in, used inside a
+  derived character in the application. That is the intended use of Mixamo
+  content.
+- **May not travel:** the GLB/FBX/VRM republished as a **standalone animation
+  pack**, since the clips would then travel as animation data on their own.
 
-- **Fine:** the avatars, with the retargeted motion baked in, used inside the
-  Seede XR application.
-- **Check first:** publishing the GLB/FBX/VRM files as a downloadable asset
-  pack, since the animation data would then travel on its own.
-
+So the same file is redistributable as a character and not as a motion library.
 Confirm against the Mixamo terms current at release:
 <https://helpx.adobe.com/creative-cloud/faq/mixamo-faq.html>
 
@@ -79,40 +95,45 @@ application, not its output — these assets are unencumbered by it.
 
 ---
 
-## VRM metadata — needs a decision before distribution
+## VRM metadata — a redistribution limit on the two `.vrm` files
 
 `avatars/vrm/*.vrm` carries a `VRMC_vrm.meta` block that tells other software how
-this avatar may be used. It ships **restrictive**, because permissive defaults on
-someone else's intellectual property is not a call a build script should make:
+this avatar may be used, and it ships **narrower than the CC BY 4.0 grant**. It
+was written restrictive because defaulting to permissive on intellectual property
+is not a call a build script should make — a defensible instinct, and the CC BY 4.0
+decision is what makes the permissive values the correct ones now.
 
-| field | shipped value | meaning |
-|---|---|---|
-| `avatarPermission` | `onlyAuthor` | only Seede XR may use it as an avatar |
-| `commercialUsage` | `corporation` | corporate commercial use allowed |
-| `creditNotation` | `required` | credit required |
-| `allowRedistribution` | `false` | no redistribution |
-| `modification` | `allowModification` | may be modified, not redistributed |
-| `licenseUrl` | `https://vrm.dev/licenses/1.0/` | VRM Public License 1.0 |
+| field | shipped value | meaning | vs the CC BY 4.0 grant |
+|---|---|---|---|
+| `avatarPermission` | `onlyAuthor` | only Seede XR may use it as an avatar | narrower |
+| `commercialUsage` | `corporation` | corporate commercial use allowed | narrower |
+| `creditNotation` | `required` | credit required | consistent |
+| `allowRedistribution` | `false` | no redistribution | narrower |
+| `modification` | `allowModification` | may be modified | consistent |
+| `licenseUrl` | `https://vrm.dev/licenses/1.0/` | VRM Public License 1.0 | names a different licence |
 
-Review these against actual commercial intent and set them in
-`scripts/09_export_vrm.py` before shipping. In particular `licenseUrl` currently
-points at the VRM Public License; if Seede XR intends its own terms, host them
-and set `otherLicenseUrl`.
+Nothing is over-granted — every divergence runs restrictive — but a VRM tool reads
+this block programmatically, so **those two files carry a redistribution
+limitation the GLBs do not** until the values are widened in
+`scripts/09_export_vrm.py` and the export re-run. `../LICENSE.md` has the
+field-by-field target values; review them against actual commercial intent as part
+of that change.
 
 ---
 
 ## Summary
 
-| Component | Owner | Licence | Attribution |
+| Component | Owner / licensor | Licence | Attribution |
 |---|---|---|---|
-| Body meshes, rigs, weights, LODs | Seede XR | proprietary | — |
+| Body meshes, rigs, weights, LODs, collision proxies, previews | Seede XR | **CC BY 4.0** | **required** — including to Seede XR as licensor |
 | Skin textures | texturecan.com, cgbookcase.com | CC BY 4.0 | **required** |
 | Complexion scale | Ellis Monk / Google | CC BY 4.0 | **required** |
-| Runway animation | Adobe Mixamo | Mixamo terms | no standalone redistribution |
-| Pipeline scripts | Seede XR | proprietary | — |
+| Runway animation | Adobe Mixamo | Mixamo terms | credit Mixamo; **no standalone redistribution** |
+| Pipeline scripts — upstream, not in this bundle | Seede XR | not covered here | — |
 
-**Minimum notice to ship with the application:**
-
-> Avatars © Seede XR. Skin textures based on material from texturecan.com and
-> cgbookcase.com (CC BY 4.0). Complexion range based on the Monk Skin Tone Scale
-> by Ellis Monk (CC BY 4.0). Character animation from Adobe Mixamo.
+**Minimum notice to ship with the application.** The wording is not restated here
+— it lives once, in **`nguo_avatar::ATTRIBUTION_NOTICE`**
+(`ui/crates/nguo-avatar/src/skin.rs:69`), with the Monk line alone available as
+`nguo_avatar::MONK_ATTRIBUTION`. One consolidated string discharges all three
+CC BY 4.0 attributions and credits Mixamo. Hand-copying it is what produced an
+under-attributing build once already; see `../LICENSE.md`.

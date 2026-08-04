@@ -69,6 +69,14 @@ impl Landmark {
             Landmark::Calf => "calf",
         }
     }
+
+    /// The inverse of [`Landmark::key`] — what a document's
+    /// `Feature::Support { landmark, .. }` string resolves to. `None` for a name
+    /// this bundle does not measure, so an unknown annotation degrades to the
+    /// caller's default rather than failing a drape.
+    pub fn from_key(key: &str) -> Option<Landmark> {
+        Landmark::ALL.into_iter().find(|l| l.key() == key)
+    }
 }
 
 /// A girth and the height it was taken at, so a waistband can be placed at the
@@ -152,5 +160,17 @@ mod tests {
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(keys.len(), Landmark::ALL.len());
+    }
+
+    /// A document annotates a landmark by its manifest string, so the round trip
+    /// is what connects a designed pattern to a measured body.
+    #[test]
+    fn every_landmark_round_trips_through_its_manifest_key() {
+        for l in Landmark::ALL {
+            assert_eq!(Landmark::from_key(l.key()), Some(l));
+        }
+        assert_eq!(Landmark::from_key("waistband"), None);
+        assert_eq!(Landmark::from_key(""), None);
+        assert_eq!(Landmark::from_key("Waist"), None, "keys are exact");
     }
 }

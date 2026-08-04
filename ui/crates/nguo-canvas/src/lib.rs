@@ -1,19 +1,51 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-//! The 2D pattern canvas: a Vello scene rendered
-//! through iced's device, with pan/zoom and pointer hit-testing.
+//! The 2D pattern canvas: a Vello scene rendered through iced's device, with
+//! pan/zoom, a grid derived from the view transform, a Bézier pen, snapping,
+//! hit-testing through a spatial index, and a per-piece scene cache.
+//!
+//! # The rules this crate keeps
+//! * **One view matrix** ([`View`]). Zoom is never baked into stored geometry;
+//!   the document is millimetres, always.
+//! * **No colour literals.** Every colour is a [`nguo_ui_theme`] token, asserted
+//!   by `tests/no_color_literals.rs`.
+//! * **No mutation.** Tools return `nguo-doc-commands` transactions. That is
+//!   structural, not a convention: `Document`'s fields are private to
+//!   `nguo-doc`, so this crate has no way in.
+//!
+//! # Layout of the pieces
+//! * [`view`] — the three coordinate spaces and the one matrix.
+//! * [`grid`] — grid and ruler geometry, derived from that matrix.
+//! * [`hit`] — the spatial index, pixel tolerance, layer priority.
+//! * [`snap`] — snap resolution: screen tolerance, world result.
+//! * [`pen`] — the pen state machine and point/handle editing.
+//! * [`scene`] — scene building and the id-keyed per-piece cache.
+//! * [`Canvas2d`] — the one object an application holds to get all of it.
 
+pub mod fixture;
+pub mod grid;
+pub mod hit;
+pub mod pen;
+pub mod scene;
+pub mod snap;
 pub mod view;
 
 use std::sync::Arc;
 
 use iced::widget::shader;
 use iced::{mouse, Rectangle};
+use nguo_doc::Document;
+use nguo_doc_commands::Transaction;
 use nguo_gpu::canvas::ScenePrimitive;
 use nguo_gpu::scale;
+use nguo_ui_theme::Tokens;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 use vello::Scene;
 
+pub use hit::{Hit, Index, Layer, Target};
+pub use pen::Pen;
+pub use scene::{Interaction, SceneCache};
+pub use snap::{Snap, SnapKind, SnapToggles, Snapper};
 pub use view::View;
 
 /// What the canvas asks the application to do.
@@ -52,7 +84,20 @@ pub struct Canvas {
     pub pick: Option<Point>,
 }
 
-pub const BACKGROUND: Color = Color::from_rgba8(0x1a, 0x1c, 0x22, 0xff);
+/// The themed base colour behind the canvas: the paper the pattern is drawn on
+/// (UX_SPEC §2 — a light canvas inside a dark shell).
+pub fn background(tokens: &Tokens) -> Color {
+    scene::ink(tokens.color.canvas)
+}
+
+/// Base colour for a caller with no theme in hand.
+///
+/// It is `BLACK` and not a hue, because this crate holds no colour literals
+/// (`tests/no_color_literals.rs`) and a `const` cannot read a token — the
+/// tokens are a `LazyLock`. Every real caller passes its theme to
+/// [`background`]; the shell already does. This exists so a `const` context and
+/// the headless render test have something opaque to clear with.
+pub const BACKGROUND: Color = Color::BLACK;
 
 impl shader::Program<Action> for Canvas {
     type State = State;
@@ -158,18 +203,106 @@ impl shader::Program<Action> for Canvas {
     }
 }
 
+/// Everything an application needs to hold to drive the 2D authoring loop.
+///
+/// The document is not in here: it belongs to the app and is passed in. That is
+/// deliberate — one document, many views (UX_SPEC §2 "coupled model, uncoupled
+/// view").
+pub struct Canvas2d {
+    pub view: View,
+    pub snapper: Snapper,
+    pub pen: Pen,
+    pub interaction: Interaction,
+    /// Hit tolerance in logical px. Generous, because a 1 px target is a target
+    /// nobody can hit (guide §6.2).
+    pub pick_px: f64,
+    index: Option<Index>,
+    cache: SceneCache,
+}
+
+impl Default for Canvas2d {
+    fn default() -> Self {
+        Canvas2d {
+            view: View::default(),
+            snapper: Snapper::default(),
+            pen: Pen::default(),
+            interaction: Interaction::default(),
+            pick_px: 7.0,
+            index: None,
+            cache: SceneCache::new(),
+        }
+    }
+}
+
+impl Canvas2d {
+    pub fn new() -> Canvas2d {
+        Canvas2d::default()
+    }
+
+    /// The spatial index for `doc`, rebuilt only when the revision moved
+    /// (guide §4.3: derived state, keyed on revision).
+    pub fn index(&mut self, doc: &Document) -> &Index {
+        let stale = self
+            .index
+            .as_ref()
+            .is_none_or(|i| i.revision() != doc.revision());
+        if stale {
+            self.index = Some(Index::of_document(doc));
+        }
+        self.index.as_ref().expect("just built")
+    }
+
+    /// Topmost target under a pointer position in logical widget px.
+    pub fn hit(&mut self, doc: &Document, screen: Point, size: Vec2) -> Option<Hit> {
+        let (view, tolerance) = (self.view, self.pick_px);
+        self.index(doc).hit_screen(&view, screen, size, tolerance)
+    }
+
+    /// Where a pointer position should actually land, after snapping. Falls back
+    /// to the raw world point when nothing is in range, so a caller can always
+    /// use the result.
+    pub fn resolve(&mut self, doc: &Document, screen: Point, size: Vec2) -> Point {
+        let raw = self.view.screen_to_world(screen, size);
+        let (view, snapper) = (self.view, self.snapper);
+        let snap = snapper.snap(raw, view.zoom, self.index(doc));
+        self.interaction.snap = snap;
+        snap.map_or(raw, |s| s.world)
+    }
+
+    /// Call this with every transaction the app applies, so the cache knows
+    /// which pieces changed. Cheap: it reads the edits it is handed.
+    pub fn applied(&mut self, tx: &Transaction) {
+        self.cache.mark_from_edits(tx.edits());
+    }
+
+    /// The frame, in logical units.
+    pub fn frame(&mut self, doc: &Document, size: Vec2, tokens: &Tokens) -> Scene {
+        self.cache
+            .frame(doc, &self.interaction, &self.view, size, tokens)
+    }
+
+    /// Per-piece scene builds since startup — the number the caching claim rests
+    /// on. Exposed so a profiling overlay (and the tests) can read it.
+    pub fn piece_builds(&self) -> u64 {
+        self.cache.piece_builds()
+    }
+}
+
 /// Builds the demo scene in **logical** units; the caller scales to physical.
 ///
 /// A filled Bézier shape and a stroked path — the two things §25.1 asks the
-/// canvas to prove — plus the pick crosshair.
+/// canvas to prove — plus the pick crosshair. Kept because it is the shell's
+/// current canvas content and the headless render-graph test's subject;
+/// [`Canvas2d::frame`] is what draws an actual document.
 pub fn build_scene(view: &View, size: Vec2, pick: Option<Point>) -> Scene {
+    let tokens = Tokens::dark();
     let mut scene = Scene::new();
     let to_screen = view.scene_transform(size, 1.0);
 
     scene.fill(
         Fill::NonZero,
         to_screen,
-        Color::from_rgba8(0x4c, 0x9a, 0xff, 0xff),
+        scene::ink(tokens.color.accent),
         None,
         &petal(),
     );
@@ -177,7 +310,7 @@ pub fn build_scene(view: &View, size: Vec2, pick: Option<Point>) -> Scene {
     scene.stroke(
         &Stroke::new(3.0 / view.zoom),
         to_screen,
-        Color::from_rgba8(0xff, 0xd0, 0x66, 0xff),
+        scene::ink(tokens.color.notch),
         None,
         &seam_line(),
     );
@@ -192,17 +325,12 @@ pub fn build_scene(view: &View, size: Vec2, pick: Option<Point>) -> Scene {
         cross.move_to((at.x, at.y - 12.0));
         cross.line_to((at.x, at.y + 12.0));
 
+        let mark = scene::ink(tokens.color.dart);
+        scene.stroke(&Stroke::new(1.5), Affine::IDENTITY, mark, None, &cross);
         scene.stroke(
             &Stroke::new(1.5),
             Affine::IDENTITY,
-            Color::from_rgba8(0xff, 0x4d, 0x6d, 0xff),
-            None,
-            &cross,
-        );
-        scene.stroke(
-            &Stroke::new(1.5),
-            Affine::IDENTITY,
-            Color::from_rgba8(0xff, 0x4d, 0x6d, 0xff),
+            mark,
             None,
             &Circle::new(at, 5.0),
         );
@@ -252,6 +380,74 @@ mod tests {
             !scene.encoding().is_empty(),
             "the canvas scene must encode something to draw"
         );
+    }
+
+    #[test]
+    fn the_demo_fill_is_still_blue_dominant() {
+        // `nguo-app/tests/render_graph.rs` counts blue pixels to prove the Vello
+        // pass ran. Swapping the literal for a token must not break that, and
+        // this is where the coupling is cheap to check.
+        let c = Tokens::dark().color.accent;
+        assert!(c.b > 0.5, "accent is not blue: {c:?}");
+        assert!(
+            c.b - c.r > 40.0 / 255.0,
+            "accent is not blue-dominant enough for the pixel test: {c:?}"
+        );
+    }
+
+    #[test]
+    fn the_facade_hits_snaps_and_draws_one_document() {
+        // The end-to-end shape of the authoring loop, in the units it actually
+        // uses: screen px in, world mm out, one frame drawn.
+        let (doc, piece, edges) = fixture::square_doc();
+        let size = Vec2::new(900.0, 700.0);
+        let mut canvas = Canvas2d::new();
+        canvas.view.pan = Vec2::new(50.0, 50.0); // centre the square
+
+        let corner = canvas.view.world_to_screen(Point::new(0.0, 0.0), size);
+        let hit = canvas
+            .hit(&doc, corner, size)
+            .expect("the corner is hittable");
+        assert_eq!(hit.target.layer(), Layer::Point);
+        assert_eq!(hit.target.piece(), piece);
+
+        // 3 px off the same corner: snapping puts it back, in world units.
+        let off = Point::new(corner.x + 3.0, corner.y);
+        assert_eq!(canvas.resolve(&doc, off, size), Point::new(0.0, 0.0));
+        assert_eq!(
+            canvas.interaction.snap.map(|s| s.kind),
+            Some(SnapKind::Endpoint)
+        );
+
+        canvas.interaction.selection = vec![Target::Edge {
+            piece,
+            edge: edges[0],
+        }];
+        let frame = canvas.frame(&doc, size, &Tokens::light());
+        assert!(!frame.encoding().is_empty());
+        assert_eq!(canvas.piece_builds(), 1);
+    }
+
+    #[test]
+    fn the_index_is_rebuilt_only_when_the_document_moves_on() {
+        let (mut doc, piece, _) = fixture::square_doc();
+        let mut canvas = Canvas2d::new();
+        let first = canvas.index(&doc).revision();
+        assert_eq!(canvas.index(&doc).revision(), first, "no needless rebuild");
+
+        let mut stack = nguo_doc_commands::CommandStack::new();
+        let v = doc
+            .piece(piece)
+            .unwrap()
+            .network
+            .vertices
+            .ids()
+            .next()
+            .unwrap();
+        let tx = pen::move_point(&doc, piece, v, Point::new(9.0, 9.0)).unwrap();
+        stack.apply(&mut doc, tx).unwrap();
+        assert_ne!(canvas.index(&doc).revision(), first, "a change invalidates");
+        assert!(canvas.index(&doc).hit(Point::new(9.0, 9.0), 0.5).is_some());
     }
 }
 
