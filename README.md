@@ -79,6 +79,18 @@ cd ../ui
 cargo run -p nguo-app
 ```
 
+Or use the wrappers in `scripts/`, which set the logging and backtrace
+environment for you and pass any remaining arguments straight through:
+
+```sh
+scripts/dev.sh                  # the GUI, debug, RUST_LOG preset (--overlay, cli ...)
+scripts/build.sh                # release-build both workspaces (--gated runs `make ci` first)
+scripts/build.sh --bundle       # ...and wrap it in nguo.app with the .nguo association (macOS)
+```
+
+Each takes `--help`. `build.sh` calls `make build-release`, so it cannot drift
+from CI. The gates themselves stay in the Makefile — `make help` lists them.
+
 ## What is actually true today
 
 Apple M4 / macOS, not recalled. The test counts, the gates and every drape

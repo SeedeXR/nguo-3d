@@ -59,3 +59,10 @@ notes_to_human.md
 # Learning/experiment scratch — Blender probes, viewport prototypes, throwaway
 # harnesses. NEVER committed; only what proves out is rewritten into production code.
 experiments/
+
+# Release artifacts — the .app, the .dmg and the icons generated from
+# ui/assets/brand-icon/app-icon.png. Everything here is DERIVED: `scripts/build.sh
+# --bundle` recreates it in about two minutes, so committing it would only let a
+# stale binary outlive the source it was built from.
+output/
+
