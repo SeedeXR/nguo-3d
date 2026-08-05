@@ -238,7 +238,7 @@ jobs:
             ui
           key: build
       - run: make build-release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mguso-macos-arm64
           path: core-engine/target/release/mguso
@@ -331,7 +331,7 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: profile-macos-arm64
