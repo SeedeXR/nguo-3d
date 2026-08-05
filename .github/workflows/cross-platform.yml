@@ -49,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Package names verified against the Ubuntu noble package index, not
       # guessed:
@@ -112,7 +112,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # GNU Make is NOT preinstalled on the windows-latest image (checked
       # against images/windows/Windows2022-Readme.md — jq is there, make is

@@ -44,7 +44,7 @@ jobs:
     name: fmt + clippy + wgpu pin
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # rust-toolchain.toml (stable + rustfmt + clippy) in both workspaces is
       # honoured automatically by rustup; no toolchain action needed.
@@ -94,7 +94,7 @@ jobs:
     name: cargo test (both workspaces)
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -143,7 +143,7 @@ jobs:
     name: avatar bundle coverage
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           lfs: true # the ONLY checkout in this repo's CI that fetches LFS
 
@@ -201,7 +201,7 @@ jobs:
     name: Metal smoke + 10x determinism
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core-engine
@@ -230,7 +230,7 @@ jobs:
     name: release binaries
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -289,7 +289,7 @@ jobs:
     runs-on: macos-15
     continue-on-error: true # advisory: a slow shared runner must not block a PR
     steps:
-      - uses: actions/checkout@v4 # deliberately no `lfs: true` — see above
+      - uses: actions/checkout@v7 # deliberately no `lfs: true` — see above
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
