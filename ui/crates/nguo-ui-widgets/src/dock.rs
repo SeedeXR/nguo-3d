@@ -103,11 +103,39 @@ pub struct Split {
     ratios: Vec<f32>,
 }
 
+/// Positive, finite and summing to 1 — or an equal split. A bad ratio must not
+/// be able to produce a negative panel.
+fn sanitised(ratios: Vec<f32>, len: usize) -> Vec<f32> {
+    let mut ratios = if ratios.len() == len && ratios.iter().all(|r| r.is_finite() && *r > 0.0) {
+        ratios
+    } else {
+        vec![1.0; len]
+    };
+    let sum: f32 = ratios.iter().sum();
+    if sum > 0.0 {
+        for r in &mut ratios {
+            *r /= sum;
+        }
+    }
+    ratios
+}
+
 impl Split {
     /// Equal shares.
     pub fn new(axis: Axis, children: Vec<Node>) -> Self {
-        let n = children.len().max(1);
-        let ratios = vec![1.0 / n as f32; children.len()];
+        let ratios = sanitised(Vec::new(), children.len());
+        Self {
+            axis,
+            children,
+            ratios,
+        }
+    }
+
+    /// Explicit shares, normalised to sum to 1. Non-finite or non-positive
+    /// entries fall back to an equal split — a bad ratio must not be able to
+    /// produce a negative panel.
+    pub fn with_ratios(axis: Axis, children: Vec<Node>, ratios: Vec<f32>) -> Self {
+        let ratios = sanitised(ratios, children.len());
         Self {
             axis,
             children,
@@ -116,22 +144,19 @@ impl Split {
         .normalised()
     }
 
-    /// Explicit shares, normalised to sum to 1. Non-finite or non-positive
-    /// entries fall back to an equal split — a bad ratio must not be able to
-    /// produce a negative panel.
-    pub fn with_ratios(axis: Axis, children: Vec<Node>, ratios: Vec<f32>) -> Self {
-        let ratios =
-            if ratios.len() == children.len() && ratios.iter().all(|r| r.is_finite() && *r > 0.0) {
-                ratios
-            } else {
-                vec![1.0; children.len()]
-            };
-        Self {
-            axis,
-            children,
-            ratios,
+    /// Replace the shares, with the same validation [`Split::with_ratios`] does.
+    ///
+    /// This is what lets a *policy* above the dock — the app's canvas-width floor
+    /// — be re-derived from the user's own ratios on every window resize instead
+    /// of accumulating on top of its own last correction.
+    pub fn set_ratios(&mut self, ratios: &[f32]) {
+        self.ratios = sanitised(ratios.to_vec(), self.children.len());
+        let sum: f32 = self.ratios.iter().sum();
+        if sum > 0.0 {
+            for r in &mut self.ratios {
+                *r /= sum;
+            }
         }
-        .normalised()
     }
 
     fn normalised(mut self) -> Self {
@@ -682,14 +707,12 @@ where
         Icon::ChevronDown
     };
 
-    let toggle = button(icon(
+    let toggle = crate::icon_button(
+        tokens,
         chevron,
-        tokens.metrics.icon,
         tokens.color.text_secondary,
-    ))
-    .padding(tokens.space.xs)
-    .style(crate::ghost_button(tokens))
-    .on_press(on_event(DockEvent::CollapseToggled(panel.id.clone())));
+        on_event(DockEvent::CollapseToggled(panel.id.clone())),
+    );
 
     container(
         row![

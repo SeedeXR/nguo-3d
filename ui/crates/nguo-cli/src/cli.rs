@@ -123,6 +123,29 @@ pub enum Command {
         #[arg(long = "out")]
         out: Option<PathBuf>,
     },
+    /// Run the whole 2D-to-worn chain on the shipped sheath-dress pattern and
+    /// save it as a `.nguo`.
+    DressExample {
+        /// Avatar bundle key ("female" is what the pattern is drafted for).
+        /// Omit for the pattern/sew/save stages only — no body, no drape.
+        #[arg(long)]
+        avatar: Option<String>,
+        /// Target triangle edge, mm. Default 60 (preview) / 30 (bake).
+        #[arg(long)]
+        edge_mm: Option<f64>,
+        #[arg(long, value_enum, default_value_t = TierArg::Preview)]
+        tier: TierArg,
+        /// Solver steps. Default 36 (preview) / 144 (bake).
+        #[arg(long)]
+        steps: Option<u32>,
+        /// Apply the proposed uniform resize. Off by default — a drafted pattern
+        /// is graded, not scaled. The proposal is reported either way.
+        #[arg(long)]
+        resize: bool,
+        /// Write the project here as a `.nguo` and prove the round trip.
+        #[arg(long = "out")]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -211,6 +234,24 @@ impl Command {
                     "ease": ease,
                     "factor": factor,
                     "fabric": fabric,
+                    "out": out.as_ref().map(|p| p.display().to_string()),
+                }),
+            ),
+            Command::DressExample {
+                avatar,
+                edge_mm,
+                tier,
+                steps,
+                resize,
+                out,
+            } => (
+                "dress_example",
+                json!({
+                    "avatar": avatar,
+                    "edge_mm": edge_mm,
+                    "tier": tier.as_str(),
+                    "steps": steps,
+                    "resize": resize,
                     "out": out.as_ref().map(|p| p.display().to_string()),
                 }),
             ),

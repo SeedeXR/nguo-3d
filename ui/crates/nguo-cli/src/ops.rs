@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 use engine_api::resize::BodyGirth;
 use engine_io::MeshUnits;
 use nguo_engine_bridge::{
-    resolve_engine_binary, EngineBridge, ProcessTransport, Submission, Tier, Update,
+    resolve_engine_binary, EngineBridge, Flow, FrameSink, InProcessTransport, ProcessTransport,
+    Stitch, Submission, Tier, Transport, Update,
 };
 use serde_json::{json, Value};
 
@@ -227,6 +228,45 @@ pub const SPECS: &[OpSpec] = &[
             })
         },
     },
+    OpSpec {
+        name: "dress_example",
+        summary: "Run the whole 2D-to-worn chain on the shipped sheath-dress pattern: draft, \
+                  triangulate, sew, hang on the avatar, resolve overlap, drape, save a `.nguo`.",
+        description: "The end-to-end industrial example, in one process, reporting every stage. \
+                      The pattern is `nguo_cli::dress::dress()` — a sleeveless sheath drafted in \
+                      MILLIMETRES to the `female` avatar's own manifest girths, two panels, two \
+                      shaped side seams. Stages: validate -> triangulate (`edge_mm`) -> arrange on \
+                      a cylinder sized from the manifest girth at the support landmark -> sew -> \
+                      `engine_api::plan_resize` (REPORTED, and applied only with `resize: true`: a \
+                      drafted pattern is graded, not scaled — `nguo_doc::Feature::Support`) -> \
+                      `engine_api::avatar::resolve_penetration` -> solve. \
+                      Without `avatar` it stops after sewing and saving, which is the only form \
+                      that runs in CI: the avatar bundle is 227 MB of Git-LFS. \
+                      With `out` the project is written as a real `.nguo` (D-1: a zip of \
+                      manifest.json + document.json + preview.svg), loaded straight back, and the \
+                      round trip is reported as `save.round_trip_identical` — including the \
+                      manifest's declared units, coordinate convention and the avatar REFERENCE \
+                      (key + tier + bundle version; the 227 MB CC BY 4.0 bundle is never \
+                      embedded). Reports honestly: seam gap in mm before and after, vertices still \
+                      inside the body after the solve, s/step, and every count. A dress that does \
+                      not close comes back with the gap it stalled at.",
+        read_only: false,
+        idempotent: true,
+        schema: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "avatar": {"type": "string", "description": "Avatar bundle key (\"female\" is what the pattern is drafted for). Omit to run the pattern/sew/save stages only, with no body and no drape."},
+                    "edge_mm": {"type": "number", "exclusiveMinimum": 0, "description": "Target triangle edge, mm. Default 60 (preview) / 30 (bake) — the single biggest input to solve cost and peak memory."},
+                    "tier": {"type": "string", "enum": ["preview", "bake"], "default": "preview", "description": "preview = XPBD, bake = implicit backward Euler (far more memory)."},
+                    "steps": {"type": "integer", "minimum": 1, "description": "Solver steps. Default 36 (preview) / 144 (bake)."},
+                    "resize": {"type": "boolean", "default": false, "description": "Apply the proposed uniform resize. Off by default: the pattern is drafted to this body, so scaling it would be grading done wrong. The proposal is reported either way."},
+                    "out": {"type": "string", "description": "Write the project here as a `.nguo` and prove the round trip. Omit to measure only."}
+                },
+                "additionalProperties": false
+            })
+        },
+    },
 ];
 
 pub fn spec(name: &str) -> Option<&'static OpSpec> {
@@ -318,6 +358,14 @@ pub fn check_args(name: &str, args: &Value) -> Result<(), OpError> {
             // MCP client that defers the work still fails on the request.
             body_choice(name, args)?;
         }
+        "dress_example" => {
+            arg_str(name, args, "avatar")?;
+            arg_positive(name, args, "edge_mm")?;
+            arg_tier(name, args)?;
+            arg_u32(name, args, "steps")?;
+            arg_bool(name, args, "resize")?;
+            arg_str(name, args, "out")?;
+        }
         _ => {}
     }
     Ok(())
@@ -347,6 +395,7 @@ pub async fn dispatch(name: &str, args: &Value, env: &Env) -> Result<Value, OpEr
             .await
         }
         "garment_fit" => garment_fit(args),
+        "dress_example" => dress_example(args),
         _ => Err(OpError::Unknown(name.to_string())),
     }
 }
@@ -717,6 +766,536 @@ fn garment_fit(args: &Value) -> Result<Value, OpError> {
             "edge_ratio": [fit.check.edge_ratio_min_all, fit.check.edge_ratio_max_all],
         },
         "scene": out,
+    }))
+}
+
+// --- dress_example --------------------------------------------------------
+
+/// Solver `dt`. Backward Euler is unconditionally stable, so this is chosen for
+/// how much *simulated time* a step buys, not for stability: at the engine's
+/// default `1e-3` a 36-step preview would advance 0.03 s and nothing would fall.
+/// The same value `nguo-app` uses, so a CLI drape and the shell's drape are the
+/// same solve rather than two similar ones.
+const DRESS_DT: f32 = 1.0 / 120.0;
+/// Clearance round the garment's own box when cropping the body proxy. It has to
+/// exceed how far the garment can travel during the solve; the dress is held up
+/// by its own waist and measures ~13 mm of slide (see `dress::WAIST_HALF_MM`), so
+/// 150 mm is an order of magnitude of headroom. It also drops the T-pose arms,
+/// which are 0.7 m out in x and can never touch a 0.2 m tube.
+const DRESS_CROP_M: f32 = 0.15;
+
+/// Total distance the seams are still open, metres, for one frame of positions.
+/// The same measure as `nguo_sewing::Garment::seam_gap_m`, against solved
+/// positions instead of arranged ones.
+fn seam_gap_m(stitches: &[nguo_sewing::Stitch6], positions: &[[f32; 3]]) -> f64 {
+    let point = |index: &[u32], weight: &[f32]| -> [f32; 3] {
+        let mut out = [0.0f32; 3];
+        for (&i, &w) in index.iter().zip(weight) {
+            if let Some(p) = positions.get(i as usize) {
+                for k in 0..3 {
+                    out[k] += w * p[k];
+                }
+            }
+        }
+        out
+    };
+    stitches
+        .iter()
+        .map(|s| {
+            let p = point(&s.index[0..3], &s.weight[0..3]);
+            let q = point(&s.index[3..6], &s.weight[3..6]);
+            ((0..3)
+                .map(|k| (p[k] - q[k]) as f64)
+                .map(|d| d * d)
+                .sum::<f64>())
+            .sqrt()
+        })
+        .sum()
+}
+
+/// Keeps the first and last frames and the seam-gap curve, and nothing else.
+///
+/// Deliberately not every frame: the closure curve is what says whether the
+/// seams are still moving, and it is one `f64` per step instead of a mesh.
+struct DressFrames<'a> {
+    stitches: &'a [nguo_sewing::Stitch6],
+    /// The garment is object 0, so its vertices are the leading prefix of every
+    /// frame. A frame shorter than this is the wrong scene and is not sliced.
+    cloth: usize,
+    first: Option<Vec<[f32; 3]>>,
+    last: Option<Vec<[f32; 3]>>,
+    gaps: Vec<f64>,
+}
+
+impl FrameSink for DressFrames<'_> {
+    fn push(&mut self, _index: u32, positions: Vec<[f32; 3]>) -> Flow {
+        if positions.len() < self.cloth {
+            tracing::error!(
+                got = positions.len(),
+                want = self.cloth,
+                "a frame is too short for the garment; dropping it"
+            );
+            return Flow::Continue;
+        }
+        let cloth = &positions[..self.cloth];
+        self.gaps.push(seam_gap_m(self.stitches, cloth));
+        if self.first.is_none() {
+            self.first = Some(cloth.to_vec());
+        }
+        self.last = Some(cloth.to_vec());
+        Flow::Continue
+    }
+
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+}
+
+/// A cloth `Object` from a garment's geometry. UVs are not optional: without
+/// them `Scene::lower` throws them all away and the anisotropic warp/weft
+/// membrane goes inert.
+fn cloth_object(
+    positions: Vec<[f32; 3]>,
+    tris: &[[u32; 3]],
+    uvs: &[[f32; 2]],
+) -> engine_api::Object {
+    engine_api::Object {
+        name: "dress".into(),
+        positions,
+        tris: tris.to_vec(),
+        material: engine_api::Material::default(),
+        preset: Some(engine_api::FabricPreset::Cotton),
+        pins: Vec::new(),
+        is_static: false,
+        normals: Vec::new(),
+        uvs: uvs.to_vec(),
+        skin: None,
+        animations: Vec::new(),
+    }
+}
+
+/// The whole chain, in one process, reporting every stage. See the [`OpSpec`].
+fn dress_example(args: &Value) -> Result<Value, OpError> {
+    const OP: &str = "dress_example";
+    let tier = arg_tier(OP, args)?;
+    let edge_mm = arg_positive(OP, args, "edge_mm")?
+        .map(f64::from)
+        .unwrap_or(match tier {
+            Tier::Preview => 60.0,
+            Tier::Bake => 30.0,
+        });
+    let steps = arg_u32(OP, args, "steps")?.unwrap_or(match tier {
+        Tier::Preview => 36,
+        Tier::Bake => 144,
+    });
+
+    // --- 1. the pattern, in millimetres -----------------------------------
+    let mut doc = crate::dress::dress();
+    let diagnostics = nguo_sewing::validate(&doc);
+    if !nguo_sewing::is_sewable(&diagnostics) {
+        return Err(OpError::Invalid(json!({
+            "stage": "validate",
+            "ok": false,
+            "diagnostics": diagnostics.iter().map(|d| d.message()).collect::<Vec<_>>(),
+        })));
+    }
+    let hang = nguo_sewing::hang(&doc);
+    let pattern = json!({
+        "name": doc.meta().name,
+        "pieces": doc.pieces().len(),
+        "seams": doc.seams().len(),
+        "vertices": doc.pieces().iter().map(|(_, p)| p.network.vertices.len()).sum::<usize>(),
+        "edges": doc.pieces().iter().map(|(_, p)| p.network.edges.len()).sum::<usize>(),
+        "units": "millimetre",
+        "support_landmark": hang.landmark,
+        "drop_mm": hang.drop_mm,
+        "support_arc_mm": doc.pieces().iter()
+            .map(|(_, p)| nguo_sewing::support_arc_mm(p).unwrap_or(0.0)).sum::<f64>(),
+        "seam_allowance_mm": crate::dress::SEAM_ALLOWANCE_MM,
+        "draft_mm": {
+            "bust_half": crate::dress::BUST_HALF_MM,
+            "waist_half": crate::dress::WAIST_HALF_MM,
+            "hip_half": crate::dress::HIP_HALF_MM,
+            "waist_drop": crate::dress::WAIST_DROP_MM,
+            "hip_drop": crate::dress::HIP_DROP_MM,
+            "length": crate::dress::LENGTH_MM,
+        },
+        "diagnostics": diagnostics.iter().map(|d| d.message()).collect::<Vec<_>>(),
+    });
+
+    // --- 2. the body, from the manifest -----------------------------------
+    let key = arg_str(OP, args, "avatar")?;
+    let bundle = match &key {
+        None => None,
+        Some(_) => Some(
+            nguo_avatar::Bundle::find()
+                .map_err(|e| OpError::Failed(format!("avatar bundle: {e}")))?,
+        ),
+    };
+    let mut arrange = nguo_sewing::ArrangeOptions::default();
+    let mut body = None;
+    let mut body_report = Value::Null;
+    if let (Some(bundle), Some(key)) = (&bundle, &key) {
+        let avatar = bundle
+            .avatar(key)
+            .map_err(|e| OpError::args(OP, e.to_string()))?;
+        let proxy = bundle
+            .load_mesh(avatar, nguo_avatar::Asset::GlbCollision)
+            .map_err(|e| OpError::Failed(format!("avatar collision proxy: {e}")))?;
+        let measurements = bundle.measurements(avatar);
+        let landmark = hang
+            .landmark
+            .as_deref()
+            .and_then(nguo_avatar::Landmark::from_key)
+            .ok_or_else(|| {
+                OpError::Failed(format!(
+                    "the pattern hangs from {:?}, which is not an avatar landmark",
+                    hang.landmark,
+                ))
+            })?;
+        let at = measurements.girth(landmark).ok_or_else(|| {
+            OpError::Failed(format!(
+                "{key} has no {} girth in its manifest",
+                landmark.key()
+            ))
+        })?;
+        let top_y_m = (at.height.mm() / 1000.0) as f32;
+        let low_y_m = top_y_m - (hang.drop_mm / 1000.0) as f32;
+
+        // The start cylinder's radius comes from the MANIFEST girths inside the
+        // band, never from a slab measured off the proxy: a horizontal slab
+        // through a T-posed body catches both arms and reads the chest ~10 %
+        // high. The measured maximum is reported beside it precisely so the
+        // difference is visible — and where it exceeds the manifest radius, the
+        // cloth genuinely does start inside the body, which is what
+        // `resolve_penetration` below then measures rather than assumes.
+        let in_band = |h: f32| h <= top_y_m + 1e-4 && h >= low_y_m - 1e-4;
+        let manifest_r = measurements
+            .girths()
+            .filter(|(_, g)| in_band((g.height.mm() / 1000.0) as f32))
+            .map(|(_, g)| (g.circumference.mm() / 1000.0) as f32 / std::f32::consts::TAU)
+            .fold(0.0f32, f32::max);
+        let mut measured = (0.0f32, 0.0f32);
+        for p in proxy.positions.iter().filter(|p| in_band(p[1])) {
+            let r = (p[0] * p[0] + p[2] * p[2]).sqrt();
+            if r > measured.0 {
+                measured = (r, p[1]);
+            }
+        }
+
+        body_report = json!({
+            "avatar": key,
+            "name": avatar.name,
+            "tier": "COL",
+            "bundle_version": bundle.manifest().version,
+            "asset": avatar.declared(nguo_avatar::Asset::GlbCollision),
+            "proxy_verts": proxy.positions.len(),
+            "proxy_tris": proxy.tris.len(),
+            "band_m": [low_y_m, top_y_m],
+            "landmark": landmark.key(),
+            "landmark_girth_m": at.circumference.mm() / 1000.0,
+            "landmark_height_m": at.height.mm() / 1000.0,
+            "manifest_radius_m": manifest_r,
+            "measured_max_radius_m": measured.0,
+            "measured_max_radius_at_y_m": measured.1,
+            "girths_m": measurements.girths()
+                .map(|(k, g)| json!({
+                    "landmark": k,
+                    "circumference_m": g.circumference.mm() / 1000.0,
+                    "height_m": g.height.mm() / 1000.0,
+                    "in_band": in_band((g.height.mm() / 1000.0) as f32),
+                }))
+                .collect::<Vec<_>>(),
+        });
+        arrange = nguo_sewing::ArrangeOptions {
+            // A floor, so a proxy or a manifest that failed to describe a body
+            // cannot collapse the start cylinder onto the axis.
+            body_radius_m: manifest_r.max(arrange.body_radius_m),
+            top_y_m,
+            ..arrange
+        };
+        body = Some(proxy);
+
+        // Record the body this run actually resolved, so the saved project
+        // references a version and a tier rather than just a name.
+        let mut avatar_ref = doc.avatar().cloned().unwrap_or_default();
+        avatar_ref.tier = Some("COL".into());
+        avatar_ref.bundle_version = Some(bundle.manifest().version.clone());
+        avatar_ref.asset = Some(avatar.declared(nguo_avatar::Asset::GlbCollision).to_owned());
+        doc.apply_edit(nguo_doc::Edit::SetAvatar {
+            avatar: Some(Box::new(avatar_ref)),
+        })
+        .map_err(|e| OpError::Failed(format!("recording the avatar reference: {e}")))?;
+    }
+
+    // --- 3. triangulate + arrange + sew -----------------------------------
+    let opts = nguo_sewing::SewOptions {
+        triangulate: nguo_triangulate::TriangulateOptions::default().with_target_edge_mm(edge_mm),
+        arrange,
+    };
+    let mut garment = nguo_sewing::build(&doc, &opts)
+        .map_err(|e| OpError::Failed(format!("the dress does not sew: {e}")))?;
+    let arranged_gap_m = garment.seam_gap_m();
+    let sew = json!({
+        "target_edge_mm": edge_mm,
+        "verts": garment.vertex_count(),
+        "tris": garment.triangle_count(),
+        "stitches": garment.stitches.len(),
+        "seams": garment.seams.iter().map(|s| json!({
+            "stitches": s.stitches, "flipped": s.flipped,
+        })).collect::<Vec<_>>(),
+        "arrangement": {
+            "radius_m": garment.arrangement.radius_m,
+            "circumference_m": garment.arrangement.circumference_m,
+            "slack_m": garment.arrangement.slack_m,
+        },
+        "bounds_m": garment.bounds().map(|b| json!({"min": b.min, "max": b.max})),
+        "seam_gap_mm": arranged_gap_m * 1000.0,
+        "timings_ms": {
+            "validate": garment.timings.validate_ms,
+            "triangulate": garment.timings.triangulate_ms,
+            "arrange": garment.timings.arrange_ms,
+            "sew": garment.timings.sew_ms,
+            "total": garment.timings.total_ms(),
+        },
+    });
+
+    // --- 4/5. resize proposal, then resolve the residual overlap ----------
+    let mut resize = Value::Null;
+    let mut penetration = Value::Null;
+    let mut cropped = Value::Null;
+    if let Some(proxy) = &body {
+        let girths: Vec<BodyGirth> = body_report["girths_m"]
+            .as_array()
+            .map(|gs| {
+                gs.iter()
+                    .map(|g| BodyGirth {
+                        landmark: g["landmark"].as_str().unwrap_or_default().to_owned(),
+                        circumference_m: g["circumference_m"].as_f64().unwrap_or(0.0) as f32,
+                        height_m: g["height_m"].as_f64().unwrap_or(0.0) as f32,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut object = cloth_object(garment.positions.clone(), &garment.tris, &garment.uvs);
+        let plan = engine_api::plan_resize(proxy, &object, &girths, engine_api::resize::FIT_EASE)
+            .map_err(|e| OpError::Failed(e.to_string()))?;
+        let apply = arg_bool(OP, args, "resize")?.unwrap_or(false);
+        // Reported always, applied only on request. A drafted pattern is graded,
+        // not scaled — `nguo_doc::Feature::Support` says so in as many words —
+        // and the proposal's job here is to *demonstrate* that a to-measure draft
+        // needs no resize, which is only worth anything if the number is visible.
+        let check = apply.then(|| engine_api::apply_resize(&mut object, &plan));
+        resize = json!({
+            "applied": apply,
+            "factor": plan.factor,
+            "ease": plan.ease,
+            "supporting": plan.supporting,
+            "length_delta_m": plan.length_delta_m(),
+            "edge_ratio": check.map(|c| [c.edge_ratio_min_all, c.edge_ratio_max_all]),
+            "landmarks": plan.fits.iter().map(|f| json!({
+                "landmark": f.landmark,
+                "body_girth_m": f.body_girth_m,
+                "garment_girth_m": f.garment.map(|r| r.girth_m),
+                "demands_factor": f.factor,
+                "slack": f.slack_at(plan.factor),
+            })).collect::<Vec<_>>(),
+        });
+
+        let fit = engine_api::avatar::resolve_penetration(
+            proxy,
+            &mut object,
+            engine_api::avatar::FIT_GAP_M,
+        )
+        .map_err(|e| OpError::Failed(e.to_string()))?;
+        penetration = json!({
+            "gap_m": engine_api::avatar::FIT_GAP_M,
+            "inside_before": fit.per_pass.first(),
+            "inside_after": fit.inside_after,
+            "deepest_inside_mm": fit.deepest_inside_m * 1000.0,
+            "pushed": fit.pushed,
+            "per_pass": fit.per_pass,
+            "converged": fit.converged(),
+            "edge_ratio": [fit.check.edge_ratio_min_all, fit.check.edge_ratio_max_all],
+        });
+        // Whatever the two passes changed is the garment the solver gets.
+        garment.positions = object.positions;
+        cropped = json!(true);
+    }
+
+    // --- 6. drape ---------------------------------------------------------
+    let mut drape = Value::Null;
+    if let Some(proxy) = &body {
+        let box_of = engine_api::Aabb::of(&garment.positions)
+            .ok_or_else(|| OpError::Failed("the sewn dress has no geometry".into()))?;
+        let near = engine_api::avatar_collider_near(proxy, box_of, DRESS_CROP_M)
+            .map_err(|e| OpError::Failed(e.to_string()))?;
+        cropped = json!({
+            "kept_verts": near.positions.len(),
+            "of_verts": proxy.positions.len(),
+            "kept_tris": near.tris.len(),
+            "of_tris": proxy.tris.len(),
+            "margin_m": DRESS_CROP_M,
+        });
+
+        // The garment is object **0**, so `Scene::lower`'s concatenation leaves
+        // its vertex indices unchanged and the stitches need no offset.
+        //
+        // KEBAB-CASE, and it is not cosmetic: `SolverConfig` is
+        // `#[serde(default, rename_all = "kebab-case")]`, so `self_collision`
+        // would be an *unknown field* serde ignores, leaving the default `false`
+        // — which once draped a garment 75 mm inside a body while reporting
+        // success. Cloth-body contact runs through the self-contact pass; there
+        // is no analytic collider in this scene, so `true` is mandatory.
+        let scene = json!({
+            "config": {
+                "dt": DRESS_DT,
+                "self-collision": true,
+                "floor-y": 0.0,
+                "iterations": match tier { Tier::Preview => 2, Tier::Bake => 8 },
+            },
+            "objects": [
+                json!({
+                    "name": "dress",
+                    "positions": garment.positions,
+                    "tris": garment.tris,
+                    "uvs": garment.uvs,
+                    "preset": "cotton",
+                }),
+                json!({
+                    "name": format!("body/{}", key.as_deref().unwrap_or("?")),
+                    "positions": near.positions,
+                    "tris": near.tris,
+                    "uvs": if near.uvs.len() == near.positions.len() {
+                        near.uvs.clone()
+                    } else {
+                        vec![[0.0f32, 0.0]; near.positions.len()]
+                    },
+                    // Every vertex infinite-mass, which is also what makes the
+                    // body cheap: the broadphase drops every candidate pair whose
+                    // participants are all immovable (D-17).
+                    "is_static": true,
+                }),
+            ],
+        });
+        let mut sink = DressFrames {
+            stitches: &garment.stitches,
+            cloth: garment.positions.len(),
+            first: None,
+            last: None,
+            gaps: Vec::new(),
+        };
+        let started = std::time::Instant::now();
+        let summary = InProcessTransport::new()
+            .solve(
+                &Submission {
+                    scene,
+                    stitches: garment
+                        .stitches
+                        .iter()
+                        .map(|s| Stitch {
+                            index: s.index,
+                            weight: s.weight,
+                        })
+                        .collect(),
+                    tier,
+                    frames: Some(steps),
+                    out_dir: None,
+                },
+                &mut sink,
+            )
+            .map_err(|e| OpError::Failed(format!("the drape failed: {e}")))?;
+        let wall_s = started.elapsed().as_secs_f64();
+
+        let last = sink
+            .last
+            .clone()
+            .ok_or_else(|| OpError::Failed("the solver emitted no frame".into()))?;
+        let finite = last.iter().flatten().all(|c| c.is_finite());
+        // How much is still inside the body once it has settled — measured the
+        // same way as before the solve, not inferred from "it looked right".
+        let mut settled = cloth_object(last.clone(), &garment.tris, &garment.uvs);
+        let after = engine_api::avatar::resolve_penetration(
+            proxy,
+            &mut settled,
+            engine_api::avatar::FIT_GAP_M,
+        )
+        .map_err(|e| OpError::Failed(e.to_string()))?;
+        let low = last.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+        let moved = sink.first.as_ref().map(|first| {
+            first
+                .iter()
+                .zip(&last)
+                .map(|(a, b)| ((0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f32>()).sqrt())
+                .fold(0.0f32, f32::max)
+        });
+
+        drape = json!({
+            "tier": summary.tier,
+            "steps": steps,
+            "frames_emitted": summary.frames_emitted,
+            "engine": summary.report,
+            "wall_s": wall_s,
+            "all_finite": finite,
+            "seam_gap_mm": {
+                "arranged": arranged_gap_m * 1000.0,
+                "first_frame": sink.gaps.first().map(|g| g * 1000.0),
+                "final": sink.gaps.last().map(|g| g * 1000.0),
+                "closed_pct": sink.gaps.first().zip(sink.gaps.last())
+                    .map(|(a, b)| 100.0 * (1.0 - b / a)),
+                "curve": sink.gaps.iter().enumerate()
+                    .filter(|(i, _)| i % 12 == 0 || *i + 1 == sink.gaps.len())
+                    .map(|(i, g)| json!([i, g * 1000.0]))
+                    .collect::<Vec<_>>(),
+            },
+            "max_vertex_travel_mm": moved.map(|m| m * 1000.0),
+            "hem_y_m": low,
+            "inside_body_after_drape": after.per_pass.first(),
+            "deepest_inside_after_drape_mm": after.deepest_inside_m * 1000.0,
+        });
+    }
+
+    // --- 7. save the `.nguo`, and load it straight back -------------------
+    let save = match arg_str(OP, args, "out")? {
+        None => Value::Null,
+        Some(dest) => {
+            let path = std::path::PathBuf::from(&dest);
+            let mut project = nguo_doc::Project::new(doc.clone());
+            let bytes = project
+                .save(&path)
+                .map_err(|e| OpError::Failed(format!("saving {dest}: {e}")))?;
+            let started = std::time::Instant::now();
+            let loaded = nguo_doc::load(&path)
+                .map_err(|e| OpError::Failed(format!("re-opening {dest}: {e}")))?;
+            let load_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let members = nguo_doc::bundle::members(
+                &std::fs::read(&path)
+                    .map_err(|e| OpError::Failed(format!("re-reading {dest}: {e}")))?,
+            )
+            .map_err(|e| OpError::Failed(format!("{dest} is not a .nguo: {e}")))?;
+            json!({
+                "path": dest,
+                "bytes": bytes,
+                "load_ms": load_ms,
+                // The whole point of a round trip: the same document, not a
+                // similar one. `Document`'s `PartialEq` skips `revision`, which
+                // is an edit counter and not content.
+                "round_trip_identical": loaded.document == project.document,
+                "members": members.iter().map(|(k, v)| json!([k, v.len()])).collect::<Vec<_>>(),
+                "manifest": serde_json::to_value(&loaded.manifest).unwrap_or(Value::Null),
+            })
+        }
+    };
+
+    Ok(json!({
+        "pattern": pattern,
+        "body": body_report,
+        "sew": sew,
+        "resize": resize,
+        "penetration": penetration,
+        "body_cropped": cropped,
+        "drape": drape,
+        "save": save,
     }))
 }
 

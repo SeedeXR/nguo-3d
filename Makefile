@@ -178,6 +178,12 @@ test-avatars: ## Avatar suites with skips turned into FAILURES (needs the bundle
 #	while covering 8 of 15 gated tests — found by review, not by the target.
 	NGUO_AVATAR_BUNDLE="$$(cd "$(AVATAR_BUNDLE)" && pwd)" MGUSO_REQUIRE_AVATAR_BUNDLE=1 \
 	  bash -c 'cd ui && cargo test -p nguo-app --features debug-overlay -- --nocapture'
+#	nguo-cli holds the end-to-end dress example's gated test (tests/dress.rs::
+#	the_dress_is_worn_by_the_real_avatar_and_its_seams_close). It is a loud skip,
+#	which is worth nothing unless something turns the skip into a failure — and
+#	that is this target's whole job.
+	NGUO_AVATAR_BUNDLE="$$(cd "$(AVATAR_BUNDLE)" && pwd)" MGUSO_REQUIRE_AVATAR_BUNDLE=1 \
+	  bash -c 'cd ui && cargo test -p nguo-cli --test dress -- --nocapture'
 	@echo "== test-avatars: avatar coverage RAN against a real bundle =="
 
 licenses: licenses-sync attribution-check ## cargo-deny allow-list + wgpu ban + sources + attribution freshness

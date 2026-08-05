@@ -2325,6 +2325,34 @@ impl ImplicitSolver {
         } else {
             Vec::new()
         };
+        // Bracketed on its own so the stencil collection and the Hessian assembly can be told
+        // apart. Without it, `asm:elastic-done` is the first reading after both and the whole
+        // jump gets blamed on whichever one you already suspected.
+        //
+        // Measured, 5 041 cloth vertices over the male COL proxy, `MGUSO_MEM_TRACE=1`, first
+        // Newton iteration of step 1 (live bytes / cumulative allocations):
+        //
+        // | checkpoint            | live     | allocs  |
+        // |-----------------------|----------|---------|
+        // | `pre-assemble`        |  24.6 MB | 126 071 |
+        // | `asm:stencils-done`   | 201.0 MB | 126 192 |
+        // | `asm:elastic-done`    | 782.9 MB | 126 201 |
+        // | `post-assemble`       |  99.9 MB | 126 318 |
+        //
+        // So stencil collection costs ~176 MB (peak 233.1 MB) and the elastic assembly a
+        // further ~582 MB in **nine allocations** — the larger share, and it is bytes, not
+        // count. The stencil LIST itself is small: 411 148 gathered block pairs is 25 697
+        // stencils at 88 B, ~2 MB. The ~176 MB is the two MATERIALISED broadphase candidate
+        // lists inside `self_collision_stencils`; `vertex_triangle_pairs` and
+        // `edge_edge_pairs` both sort and dedup, so both hold the whole pair list at 8 B a
+        // pair. The CCD path was converted to `for_each_*` for exactly this reason; the
+        // BARRIER path was not, because it needs each stencil exactly once and the dedup is
+        // what guarantees that.
+        //
+        // What the nine allocations are is NOT established here — do not guess a mechanism
+        // from this table. `MGUSO_ASM_STATS=1` prints the sink's chunk and gather sizes and is
+        // the place to start.
+        crate::alloc_stats::checkpoint("asm:stencils-done");
         let want_diag = !self.pins.is_empty()
             || !self.pulls.is_empty()
             || (!self.colliders.is_empty() && self.params.contact_rayleigh);
@@ -3093,6 +3121,7 @@ impl ImplicitSolver {
         // `MGUSO_ASM_STATS=1`: the actual assembly sizes, so the memory profile is measured
         // rather than estimated. Built once and reported, not built twice.
         let pushed = trips.pushed;
+        let gathered = trips.blocks.len();
         drop(trips);
         self.trips_hint.set(pushed);
         self.trips_cap.set(sink.chunk_capacity());
@@ -3100,13 +3129,26 @@ impl ImplicitSolver {
         let flushes = sink.flushes();
         if asm_stats() {
             let ent = std::mem::size_of::<crate::csr::Triplet>();
+            // `gather` is the `fixed_hess_in` set: 16 block slots per active contact stencil
+            // plus 9 per strain-limit face. It is reported because it — not the triplet
+            // stream, and not the allocation COUNT — is what peak LIVE bytes is made of once
+            // the sink bounds the assembly: `slots` (a `HashMap` entry per pair), `blocks`
+            // (36 B per pair) and the `snapshot` clone each consumer takes, all three sized
+            // by this one number and all three rebuilt per Newton iteration.
+            let gm = |n: usize, per: usize| (n * per) as f64 / 1048576.0;
             eprintln!(
                 "asm: ndof {ndof}  pushed {pushed}  \
-                 chunk cap {} ({:.1} MB, {flushes} folds)  csr nnz {} ({:.1} MB)",
+                 chunk cap {} ({:.1} MB, {flushes} folds)  csr nnz {} ({:.1} MB)  \
+                 gather {gathered} pairs (blocks {:.1} MB + snapshot {:.1} MB + slots ~{:.1} MB)",
                 sink.chunk_capacity(),
                 (sink.chunk_capacity() * (ent + 8)) as f64 / 1048576.0,
                 m.nnz(),
                 (m.nnz() * 8) as f64 / 1048576.0,
+                gm(gathered, 36),
+                gm(gathered, 36),
+                // `HashMap<(u32,u32), usize>`: 16 B of key+value per entry, and the table is
+                // over-allocated to keep its load factor, so this is a floor not an estimate.
+                gm(gathered, 16),
             );
         }
         (m, rhs)

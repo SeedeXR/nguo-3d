@@ -774,7 +774,27 @@ pub fn rayleigh_stiffness(
     let m_max = mass.iter().copied().fold(0.0f32, f32::max);
 
     // w = normalize([value[ii] * e]) over the 3N-vector.
-    let mut w = vec![0.0f32; 3 * n];
+    //
+    // **On the stack for every stencil the solver actually has.** This `vec!` was the
+    // solver's most frequent heap allocation by a factor of a thousand: measured with
+    // `experiments/csrprobe`'s `allocsites` on 5 041 cloth vertices over the male COL proxy,
+    // it accounted for **99.92 %** of all engine allocations (48 B each — `n == 4`, twelve
+    // `f32`), because it runs once per ACTIVE contact stencil per Newton iteration. Both
+    // production callers are bounded: a vertex-triangle or edge-edge stencil has 4
+    // participants, an analytic collider contact has 1.
+    //
+    // ponytail: the heap fallback keeps this a `&[..]` API rather than a const-generic one.
+    // Nothing in the workspace passes `n > 4`, so the branch is there to keep the public
+    // signature honest, not because a caller needs it.
+    const MAX_N: usize = 4;
+    let mut stack = [0.0f32; 3 * MAX_N];
+    let mut spill: Vec<f32>;
+    let w: &mut [f32] = if n <= MAX_N {
+        &mut stack[..3 * n]
+    } else {
+        spill = vec![0.0f32; 3 * n];
+        &mut spill
+    };
     for ii in 0..n {
         let v = weights[ii] * e;
         w[3 * ii] = v.x;
@@ -1688,6 +1708,41 @@ mod tests {
         // Without the substitution the one-sided case would be ~half as stiff;
         // confirm we are NOT in that regime.
         assert!(one_static > 0.75 * both_dynamic);
+    }
+
+    /// **The allocation guard.** `rayleigh_stiffness` runs once per ACTIVE contact stencil
+    /// per Newton iteration, which made its `w` buffer 99.92 % of every heap allocation the
+    /// solver performed (measured, 5 041 cloth vertices over the male COL proxy: 2 350 318
+    /// allocations over 12 steps, of which all but ~1 900 were this 48-byte `vec!`).
+    ///
+    /// Asserts EXACT equality against the thread's own watermark, not a budget: the fixture
+    /// below allocates nothing else, so any growth at all is this buffer coming back. The
+    /// `acc > 0.0` assertion is not decoration — `rayleigh_stiffness` returns early for
+    /// `g <= 0`, before it would allocate, so an inactive fixture would let this test pass
+    /// by doing nothing.
+    #[test]
+    fn rayleigh_stiffness_does_not_allocate() {
+        let elastic = [[0.05f32; 9]; 16];
+        let mass = [0.9f32; 4];
+        let weights = [1.0f32, -0.3, -0.3, -0.4];
+        let e = Vec3::new(0.0, 1.0e-3, 0.0);
+        // One warm call first, so anything lazily initialised is not charged to the window.
+        assert!(
+            rayleigh_stiffness(&elastic, &mass, &weights, e, 0.0) > 0.0,
+            "fixture must be an ACTIVE contact, or the early return makes this vacuous"
+        );
+        crate::alloc_stats::reset_thread_peak();
+        let base = crate::alloc_stats::thread_peak_bytes();
+        let mut acc = 0.0f32;
+        for _ in 0..1000 {
+            acc += rayleigh_stiffness(&elastic, &mass, &weights, e, 0.0);
+        }
+        assert!(acc > 0.0, "fixture went inactive");
+        assert_eq!(
+            crate::alloc_stats::thread_peak_bytes(),
+            base,
+            "rayleigh_stiffness allocated; it is the solver's most frequent call site"
+        );
     }
 
     /// The headline: including the ELASTIC Hessian makes the barrier stiffer than

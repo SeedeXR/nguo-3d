@@ -2656,6 +2656,7 @@ dependencies = [
  "nguo-avatar",
  "nguo-canvas",
  "nguo-doc",
+ "nguo-doc-commands",
  "nguo-engine-bridge",
  "nguo-gpu",
  "nguo-keymap",
@@ -2734,7 +2735,10 @@ dependencies = [
  "engine-api",
  "engine-io",
  "nguo-avatar",
+ "nguo-doc",
  "nguo-engine-bridge",
+ "nguo-sewing",
+ "nguo-triangulate",
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
@@ -2755,6 +2759,7 @@ dependencies = [
 name = "nguo-doc"
 version = "0.0.1"
 dependencies = [
+ "flate2",
  "kurbo 0.13.1",
  "nguo-measure",
  "nguo-pattern",

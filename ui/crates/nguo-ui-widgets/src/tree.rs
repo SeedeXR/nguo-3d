@@ -201,9 +201,11 @@ where
     };
     let indent = tokens.space.lg * depth as f32;
 
+    // The blank keeps a childless row's label aligned with its siblings', so it
+    // has to be as wide as the button it stands in for.
     let disclosure: Element<'a, Message> = if node.children.is_empty() {
         space::horizontal()
-            .width(Length::Fixed(tokens.metrics.icon))
+            .width(Length::Fixed(tokens.metrics.control_height))
             .into()
     } else {
         let glyph = if state.is_expanded(&node.id) {
@@ -211,11 +213,12 @@ where
         } else {
             Icon::ChevronRight
         };
-        button(icon(glyph, tokens.metrics.icon, c.text_muted))
-            .padding(0)
-            .style(crate::ghost_button(tokens))
-            .on_press(on_event(TreeEvent::Toggled(node.id.clone())))
-            .into()
+        crate::icon_button(
+            tokens,
+            glyph,
+            c.text_muted,
+            on_event(TreeEvent::Toggled(node.id.clone())),
+        )
     };
 
     let mut label = row![disclosure]

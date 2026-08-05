@@ -59,3 +59,8 @@ wgpu = { workspace = true }
 bytemuck = { workspace = true }
 thiserror = { workspace = true }
 pollster = "0.4"
+# The history-panel tests author a coalesced gesture (a drag) directly. The shell
+# itself never builds a `Transaction` — it only routes ones the canvas made, and
+# `nguo-canvas` re-exports the one type it needs (`CommandStack`) — so this stays
+# test-only rather than becoming a real dependency.
+nguo-doc-commands = { workspace = true }

@@ -26,6 +26,13 @@ nguo-engine-bridge = { workspace = true }
 nguo-avatar = { workspace = true }
 engine-api = { workspace = true }
 engine-io = { workspace = true }
+# `dress_example`: the whole 2D -> 3D chain in one operation. `nguo-doc` is the
+# document and the `.nguo` bundle, `nguo-sewing` is validate/triangulate/arrange/
+# sew (and pulls `nguo-triangulate`, which owns the one mm -> m conversion).
+# Both are already in this workspace; no new third-party dependency.
+nguo-doc = { workspace = true }
+nguo-sewing = { workspace = true }
+nguo-triangulate = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

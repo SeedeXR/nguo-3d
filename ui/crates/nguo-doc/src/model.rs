@@ -217,6 +217,7 @@ impl Default for Material {
 /// are visible to expressions as bare names or as `body.<name>`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AvatarRef {
+    /// The avatar manifest's own key: `"male"` / `"female"`.
     pub name: String,
     pub measurements: BTreeMap<String, f64>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -224,6 +225,19 @@ pub struct AvatarRef {
     /// Path inside the project bundle, resolved by `nguo-io`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset: Option<String>,
+    /// Which proxy of that avatar: `"col"`, `"rigged"`, … Saved so a reload
+    /// resolves the *same* body, not merely one with the same name.
+    ///
+    /// No schema bump: both of these are optional and absent from every
+    /// document written before them, exactly like `Feature::Support`. A
+    /// `None` means "resolve by key and warn", never "substitute a default".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
+    /// `bundle_version` from `assets/avatars/data/manifest.json`. The bundle is
+    /// 227 MB, Git-LFS and CC BY 4.0, so a project *references* it and this is
+    /// how a load knows whether it got the version it was drafted against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_version: Option<String>,
 }
 
 /// 3D placement of a piece before draping.

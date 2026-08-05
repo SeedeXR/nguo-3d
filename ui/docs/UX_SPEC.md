@@ -104,6 +104,32 @@ pattern piece stops being editable rather than merely visible — and
 too narrow to satisfy everyone. Tested by
 `side_panels_yield_before_the_canvases_do`.
 
+That rule lives in the **application**, not in `nguo-ui-widgets`, and the
+distinction is load-bearing: the dock's own `MIN_PANEL` is *symmetric* — every
+child is equally entitled to it — whereas this says *these two children are the
+work and the other two are chrome*. Priority between panels is a product
+decision, so the dock exposes `Split::set_ratios` and the app supplies the
+policy. `set_ratios` re-derives the floor from the user's own ratios on every
+resize rather than correcting on top of its last correction, which is what stops
+the layout drifting a little further each time the window changes size.
+
+**Every hit target comes from a token, never from padding.** Icon-only
+affordances are the ones that go wrong, because a glyph size reads as a control
+size. Measured before the fix: the scene tree's disclosure triangle was 16×16
+(`padding(0)` around a 16 px glyph), and the dock's collapse chevron and the
+toast's dismiss were 20×20 (`padding(space.xs)` around one) — all three below
+the 24 px floor. They now route through `nguo_ui_widgets::icon_button`, which
+sizes itself from `Metrics::control_height` (26 px), and
+`nguo_ui_theme::tests::scales_are_monotonic` pins that token at ≥ 24. Adding a
+new icon button by hand reintroduces the bug; use the helper.
+
+**The shipped column ratios come from the references, not from taste.** Both
+CLO3D and Marvelous Designer land on a ~22.5 % right dock with a narrow left
+rail, and split the two work areas almost exactly evenly (32.3 / 32.2 %) — see
+the session-2 captures under `instructions/ui-references/`. Ours were 17 / 18:
+a left rail twice as wide as either reference, and a properties column too
+narrow to hold a number field. **3D sits left of 2D**, as it does in both.
+
 **Coupled model, uncoupled view.** Each canvas has its own camera, but both
 index the same document entities by the same stable ids, so selecting a 2D edge
 highlights the same seam in 3D at no structural cost.

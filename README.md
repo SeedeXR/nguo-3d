@@ -82,22 +82,25 @@ cargo run -p nguo-app
 ## What is actually true today
 
 Apple M4 / macOS, not recalled. The test counts, the gates and every drape
-figure were re-run on 2026-08-04; the GPU, wgpu and avatar rows were verified
+figure were re-run on 2026-08-05; the GPU, wgpu and avatar rows were verified
 earlier and are unchanged since.
 
 | | |
 |---|---|
-| Engine tests | **399 pass, 0 fail** (3 ignored) |
-| Application tests | **542 pass, 2 fail** (3 ignored) — the two need a built `mguso`; see below |
+| Engine tests | **452 pass, 0 fail** (3 ignored) |
+| Application tests | **625 pass, 0 fail** (3 ignored) — build `mguso` (`cargo build -p engine-cli`) or the two CLI tests fail on its absence |
 | Gates | `cargo fmt --check` and `cargo clippy --all-targets -D warnings` clean, both workspaces |
 | GPU backend | **Metal / Apple M4 verified**, compute probe green |
 | wgpu version | **27.0.1**, single version across the whole tree — [why](core-engine/docs/WGPU_PIN.md) |
 | Application | **runs** — splash → workspace with an avatar on screen |
 | Avatars | **2 bodies load, display and measure.** Licence resolved: **CC BY 4.0, ours** |
 | **Sew → drape on a body** | **works, and was watched on screen.** A 36-step preview streams in **4.68 s** |
-| **Drafting with the mouse** | **not wired.** The canvas draws the document; no pointer gesture edits it |
-| Linux / Windows | **advisory only.** The `cross-platform` job (ubuntu/lavapipe, windows/DX12) **passed** on the last push; it is not a blocking check |
-| CI on `main` | **RED.** The last push failed `CI → test` and `Licenses` — see below |
+| **Drafting with the mouse** | **wired.** Pointer events reach the pen; rulers in mm, grid/vertex/edge/alignment snapping |
+| **Undo history** | **a clickable panel.** Click any row to jump to that state; one drag is one entry |
+| **`.nguo` project file** | **saves and loads.** Self-describing zip — schema version, units, handedness; avatar referenced, not embedded |
+| **Worked example** | `assets/examples/dress-female-sheath.nguo` — 3 506 bytes, drafted → sewn → draped on the female avatar |
+| Linux / Windows | **UNTESTED.** The `cross-platform` job is **disabled** (2026-08-05) — nobody has a machine to verify it on, so support is a claim, not a fact |
+| CI on `main` | **GREEN.** `CI` and `Licenses` both pass on `ca8804a` |
 
 The two failing application tests are `nguo-cli`'s end-to-end drape checks. They
 hard-fail rather than skip when `core-engine/target/release/mguso` is absent,

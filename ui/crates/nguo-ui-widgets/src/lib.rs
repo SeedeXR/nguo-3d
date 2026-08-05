@@ -10,6 +10,7 @@
 //! - [`icon`] — compile-time-embedded Lucide/Tabler SVGs
 //! - [`dock`] — single-window docking: split panes, dividers, collapse, tabs
 //! - [`tree`] — piece/layer hierarchy
+//! - [`history`] — the undo history as a clickable list
 //! - [`controls`] — toolbar, expression field, inspector, status bar, toasts
 //!
 //! ## Theming iced's built-in widgets
@@ -19,6 +20,7 @@
 
 pub mod controls;
 pub mod dock;
+pub mod history;
 pub mod icon;
 pub mod tree;
 
@@ -27,6 +29,7 @@ pub use controls::{
     toast, tool_button, toolbar, toolbar_separator, ExprStatus, ToastLevel,
 };
 pub use dock::{dock, Axis, DividerGrab, DockEvent, DockLayout, Node, Panel, Split, Tab};
+pub use history::{history, HistoryEvent, HistoryRow};
 pub use icon::{icon, Icon};
 pub use tree::{tree, TreeEvent, TreeNode, TreeState};
 
@@ -147,6 +150,36 @@ pub fn ghost_button(tokens: &Tokens) -> impl Fn(&iced::Theme, button::Status) ->
             ..button::Style::default()
         }
     }
+}
+
+/// A ghost icon button whose **hit target is a whole control height**, not the
+/// size of the glyph inside it.
+///
+/// Every icon-only affordance in this crate goes through here, because every one
+/// of them was built by hand and every one of them was too small: the tree's
+/// disclosure triangle was `padding(0)` around a 16 px glyph (16x16), the dock's
+/// collapse chevron and the toast's dismiss were `padding(space.xs)` around one
+/// (20x20). `Metrics::control_height` is the token that promises a grabbable
+/// target — `nguo_ui_theme::tests::scales_are_monotonic` pins it at >= 24 — so the
+/// size comes from there rather than from a padding value chosen per call site.
+pub fn icon_button<'a, Message: Clone + 'a>(
+    tokens: &Tokens,
+    glyph: Icon,
+    tint: Rgba,
+    on_press: Message,
+) -> iced::Element<'a, Message> {
+    let target = iced::Length::Fixed(tokens.metrics.control_height);
+    button(
+        container(crate::icon::icon(glyph, tokens.metrics.icon, tint))
+            .center_x(iced::Length::Fill)
+            .center_y(iced::Length::Fill),
+    )
+    .width(target)
+    .height(target)
+    .padding(0)
+    .style(ghost_button(tokens))
+    .on_press(on_press)
+    .into()
 }
 
 /// The icon for the *other* theme — what a theme-toggle button should show.

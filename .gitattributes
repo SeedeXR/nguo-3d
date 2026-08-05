@@ -43,6 +43,10 @@
 *.woff    binary
 *.woff2   binary
 *.glb     binary
+# A `.nguo` project is a zip (D-1). git's own detection would call it binary
+# anyway; saying so is the guard against ever being wrong about that, because
+# `* text=auto eol=lf` above would corrupt a deflate stream if it were.
+*.nguo    binary
 *.vrm     binary
 *.npy     binary
 *.pdf     binary

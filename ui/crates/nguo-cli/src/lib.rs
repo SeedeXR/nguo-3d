@@ -6,4 +6,5 @@
 //! there is exactly one implementation of every operation.
 
 pub mod cli;
+pub mod dress;
 pub mod ops;

@@ -28,6 +28,7 @@ use nguo_splash::Splash;
 use nguo_ui_theme::Tokens;
 use nguo_ui_widgets as w;
 use nguo_ui_widgets::dock::{Axis, DockEvent, DockLayout, Panel, Tab};
+use nguo_ui_widgets::history::{HistoryEvent, HistoryRow};
 use nguo_ui_widgets::icon::Icon;
 use nguo_ui_widgets::tree::{TreeEvent, TreeState};
 use nguo_viewport3d::{Camera, Viewport};
@@ -77,6 +78,7 @@ enum Message {
     Event(iced::Event),
     Dock(DockEvent),
     Tree(TreeEvent),
+    History(HistoryEvent),
     Command(CommandId),
     PaletteQuery(String),
     PaletteAccept,
@@ -113,7 +115,26 @@ struct App {
     /// The scene tree, projected from the document. Rebuilt on a document
     /// edit, not per frame — `view` borrows it.
     scene_rows: Vec<nguo_ui_widgets::tree::TreeNode>,
+    /// The history panel's rows, projected from `stack`. Same deal as
+    /// `scene_rows`: rebuilt when the history moves, borrowed by `view`.
+    history_rows: Vec<HistoryRow>,
     layout: DockLayout,
+    /// The root split's ratios **as the user last set them**, before any canvas
+    /// floor was applied.
+    ///
+    /// `shell::enforce_canvas_minimum` only ever *shrinks* — it squeezes the
+    /// chrome columns when a work area would fall under `CANVAS_MIN`, and does
+    /// nothing when there is no deficit. It runs every frame (the window can be
+    /// resized with no dock event at all), and it mutates in place. So without
+    /// this, narrowing the window and widening it again leaves the panels
+    /// squeezed forever: the deficit is gone, so nothing pushes them back, and
+    /// the user's layout is silently lost.
+    ///
+    /// Restoring this before enforcing makes the floor a function of the
+    /// window width alone rather than of the resize history — the property
+    /// `Split::set_ratios` was added for. Captured after a divider drag, which
+    /// is the only place the user expresses an intent to change it.
+    user_ratios: Vec<f32>,
     tree: TreeState,
 
     keymap: Keymap,
@@ -189,8 +210,17 @@ impl App {
         stages.push("keymap");
 
         let doc = shell::sample_document();
+        let stack = nguo_canvas::CommandStack::new();
         let scene_rows = shell::scene_tree(&doc);
-        let layout = shell::default_layout(&tokens);
+        // An empty stack projects to just the row for the document itself, so
+        // the panel needs no special case for a fresh launch.
+        let history_rows = shell::history_rows(&stack, &doc);
+        let mut layout = shell::default_layout(&tokens);
+        // The shipped ratios ARE the user's intent until they drag a divider.
+        let user_ratios = layout
+            .split_at_mut(&[])
+            .map(|s| s.ratios().to_vec())
+            .unwrap_or_default();
         stages.push("document");
 
         // The bundle is optional. `report_avatar_failure` turns a miss into a
@@ -238,8 +268,10 @@ impl App {
             drape_label: drape_label(drape.as_ref()),
             cursor_label: "—".to_owned(),
             doc,
-            stack: nguo_canvas::CommandStack::new(),
+            stack,
             scene_rows,
+            history_rows,
+            user_ratios,
             layout,
             tree: TreeState::expanded(["garment", "piece/0"]),
             keymap,
@@ -266,6 +298,37 @@ impl App {
             tokens,
             paper,
         }
+    }
+
+    /// Record the current root ratios as the user's intent.
+    ///
+    /// Called after a divider drag — the only gesture that says "I want the
+    /// columns this wide". Everything else that moves them is a constraint,
+    /// and a constraint must not become the new baseline.
+    fn capture_user_ratios(&mut self) {
+        if let Some(split) = self.layout.split_at_mut(&[]) {
+            self.user_ratios = split.ratios().to_vec();
+        }
+    }
+
+    /// Put the user's ratios back, then re-apply the canvas floor on top.
+    ///
+    /// This is the whole point of [`Split::set_ratios`]: the floor becomes a
+    /// pure function of the window width, not of how the window got there.
+    /// Applying `enforce_canvas_minimum` to already-clamped ratios instead
+    /// ratchets — each narrowing squeezes further and no widening gives it back.
+    fn restore_then_enforce_canvas_minimum(&mut self) {
+        let Some(width) = self.logical_width() else {
+            return;
+        };
+        if !self.user_ratios.is_empty() {
+            if let Some(split) = self.layout.split_at_mut(&[]) {
+                if split.children().len() == self.user_ratios.len() {
+                    split.set_ratios(&self.user_ratios);
+                }
+            }
+        }
+        shell::enforce_canvas_minimum(&mut self.layout, width);
     }
 
     /// Logical size of the window, from the compositor. `None` before the
@@ -348,10 +411,11 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             };
 
             // The canvas floor is re-asserted every frame because the window
-            // can be resized without any dock event at all.
-            if let Some(width) = app.logical_width() {
-                shell::enforce_canvas_minimum(&mut app.layout, width);
-            }
+            // can be resized without any dock event at all. Restore the user's
+            // ratios first: `enforce_canvas_minimum` only shrinks, so without
+            // this a narrow window would squeeze the chrome permanently and
+            // widening it again would never give the space back.
+            app.restore_then_enforce_canvas_minimum();
 
             let mut tasks = Vec::new();
             if dismissed {
@@ -392,6 +456,12 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Dock(event) => app.layout.update(event),
 
         Message::Tree(event) => app.tree.update(event),
+
+        // A row index is the stack position it names (`shell::history_rows`), so
+        // this is the whole of jump-to-state.
+        Message::History(HistoryEvent::Jump(position)) => {
+            history_move(app, "history.jump", |s, d| s.jump_to(d, position));
+        }
 
         Message::Command(id) => return dispatch(app, id),
 
@@ -463,11 +533,49 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
 /// cannot drift apart.
 fn refresh_doc_chrome(app: &mut App) {
     app.scene_rows = shell::scene_tree(&app.doc);
+    app.history_rows = shell::history_rows(&app.stack, &app.doc);
     app.doc_label = format!(
         "{} · {} pieces",
         app.doc.meta().name,
         app.doc.pieces().len()
     );
+}
+
+/// Every move through the history — undo, redo, and a click in the panel — goes
+/// through here, because they all need the same two things done around them.
+///
+/// End any pen run FIRST. `PenState::Drawing { piece }` names a piece the move
+/// may be about to remove, and a pen pointing at a gone piece wedges the draw
+/// tool silently — every later click resolves `doc.piece(piece)` to an error the
+/// canvas swallows, with no log and no visible cause, until the user happens to
+/// press Esc. Then refresh the chrome, so the scene tree, the title and the
+/// history panel all agree with the document again.
+///
+/// `CommandStack::{undo, redo, jump_to}` all return `bool` and not an edit list,
+/// so the piece cache is not told what changed — `SceneCache` notices the
+/// revision moved further than its marks explain and rebuilds the lot, which is
+/// slow for one frame and never stale.
+fn history_move(
+    app: &mut App,
+    what: &str,
+    step: impl FnOnce(
+        &mut nguo_canvas::CommandStack,
+        &mut nguo_doc::Document,
+    ) -> Result<bool, nguo_doc::DocError>,
+) {
+    if let Ok(canvas) = app.canvas2d.get_mut() {
+        canvas.cancel();
+    }
+    match step(&mut app.stack, &mut app.doc) {
+        Ok(true) => refresh_doc_chrome(app),
+        Ok(false) => {}
+        Err(error) => {
+            // A jump can stop part-way; the stack's position says where it got
+            // to and every step was atomic, so the chrome still has to catch up.
+            refresh_doc_chrome(app);
+            tracing::warn!(target: "nguo_app", %error, command = what, "history step failed");
+        }
+    }
 }
 
 fn on_canvas_pointer(app: &mut App, pointer: nguo_canvas::Pointer) -> Task<Message> {
@@ -665,9 +773,10 @@ fn on_event(app: &mut App, event: iced::Event) -> Task<Message> {
         iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
             if app.layout.is_dragging() {
                 app.layout.drag_to((position.x, position.y));
-                if let Some(width) = app.logical_width() {
-                    shell::enforce_canvas_minimum(&mut app.layout, width);
-                }
+                // A drag IS the user expressing intent, so it becomes the new
+                // baseline before the floor is re-applied on top of it.
+                app.capture_user_ratios();
+                app.restore_then_enforce_canvas_minimum();
             }
         }
 
@@ -728,32 +837,11 @@ fn dispatch(app: &mut App, id: CommandId) -> Task<Message> {
             app.resolver.cancel();
         }
         // Undo covers every canvas tool, because every tool goes through the
-        // stack. `CommandStack::undo` returns a `bool` and not an edit list, so
-        // the piece cache is not told what changed — `SceneCache` notices the
-        // revision moved further than its marks explain and rebuilds the lot,
-        // which is slow for one frame and never stale.
-        "edit.undo" | "edit.redo" => {
-            // End any pen run FIRST. `PenState::Drawing { piece }` names a
-            // piece undo may be about to remove, and a pen pointing at a gone
-            // piece wedges the draw tool silently — every later click resolves
-            // `doc.piece(piece)` to an error the canvas swallows, with no log
-            // and no visible cause, until the user happens to press Esc.
-            if let Ok(canvas) = app.canvas2d.get_mut() {
-                canvas.cancel();
-            }
-            let moved = if id.as_str() == "edit.undo" {
-                app.stack.undo(&mut app.doc)
-            } else {
-                app.stack.redo(&mut app.doc)
-            };
-            match moved {
-                Ok(true) => refresh_doc_chrome(app),
-                Ok(false) => {}
-                Err(error) => {
-                    tracing::warn!(target: "nguo_app", %error, command = id.as_str(), "history step failed")
-                }
-            }
-        }
+        // stack. The keymap owns the chords (⌘Z / ⇧⌘Z, both reserved in
+        // `nguo_keymap::defaults::RESERVED`); the history panel is a second way
+        // in to the same two calls, not a second implementation.
+        "edit.undo" => history_move(app, "edit.undo", |s, d| s.undo(d)),
+        "edit.redo" => history_move(app, "edit.redo", |s, d| s.redo(d)),
         "app.quit" | "window.close" => return iced::exit(),
         "view.cycle_pane_focus" => {
             app.focus = match app.focus {
@@ -974,6 +1062,8 @@ fn panel_body<'a>(app: &'a App, _panel: &Panel, tab: &Tab) -> Element<'a, Messag
         .map(Message::Viewport),
 
         "props" => properties(app),
+
+        shell::HISTORY => w::history(t, &app.history_rows, Message::History),
 
         "params" => w::empty_state(
             t,

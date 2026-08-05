@@ -33,16 +33,31 @@ type Grid = HashMap<Cell, (u32, u32), std::hash::BuildHasherDefault<FxHasher>>;
 /// each doubling as it fills, and this grid is rebuilt on every Newton iteration AND every
 /// CCD widening pass.
 ///
-/// **Peak LIVE bytes did not predict the footprint; the allocation COUNT did.** Measured,
-/// 5 041 cloth vertices over the male COL proxy, `MGUSO_MEM_TRACE=1`:
+/// The flat buffer is still the right shape — one `Vec` per occupied cell would be an
+/// allocation per cell on a grid rebuilt every Newton iteration. But the REASON this comment
+/// used to give for it has been measured and is **false**, so it is recorded here rather than
+/// left to be rediscovered:
 ///
-/// * one step allocated **2 273 214** times for 537.9 MB of total churn, of which
-///   **1 958 000 (91%) fell between `post-solve` and `post-ccd`** — the CCD line search,
-///   which rebuilds this grid once per widening pass.
-/// * peak live was 87.3 MB but 12 steps reached `/usr/bin/time -l` maximum RSS
-///   **1 309 474 816 B — 8.4x the peak live**, because macOS libmalloc only returns a span
-///   once every object in it is free, and millions of short-lived 16-64 B buckets leave
-///   every span holding something.
+/// > "Peak LIVE bytes did not predict the footprint; the allocation COUNT did."
+///
+/// Allocation count does **not** predict the footprint. Measured on the same scene the claim
+/// was made about — 5 041 cloth vertices over the male COL proxy, 12 steps, `memprobe` under
+/// `/usr/bin/time -l`, the two runs differing only in whether
+/// [`crate::contact::rayleigh_stiffness`] puts its 48-byte `w` buffer on the stack:
+///
+/// | | allocations | peak live | max RSS |
+/// |---|---|---|---|
+/// | before | 2 350 318 | 834.2 MB | 1 116 700 672 B |
+/// | after | 8 693 | 834.2 MB | 1 119 076 352 B |
+///
+/// **270x fewer allocations moved max RSS by +0.2 % and the wall clock by +1.0 %**, with a
+/// bit-identical position fingerprint (`d3e5bf44d601fba3`) proving nothing else changed. At
+/// 10 000 cloth vertices it is 732x fewer for −0.14 % RSS. The old 8.4x RSS-over-peak-live
+/// retention figure is also gone: it now reads 1.28x here and 1.05x at 10 000 vertices, so
+/// the libmalloc-retention story those numbers told no longer describes this tree.
+///
+/// What peak bytes are actually made of is in `implicit::assemble`'s `asm:stencils-done`
+/// checkpoint. Reach for churned BYTES, not count, when this comes up again.
 ///
 /// Bucket CONTENTS are unchanged: within a cell, indices land in insertion order exactly as
 /// `Vec::push` left them, so every consumer sees the same slice and the pair lists are
@@ -423,6 +438,11 @@ pub fn for_each_edge_edge_pair(
     // -> 6 973 780 (18.2x), and `/usr/bin/time -l` maximum RSS for the run
     // 2 507 751 424 -> 928 743 424 B (2.70x), 48.46 -> 41.60 s. The raw-pair `Vec` at
     // 8 B/pair plus its doubling realloc WAS the excess.
+    //
+    // The 2.70x RATIO is what that A/B established and it still stands. The ABSOLUTE
+    // 928 743 424 B does NOT: re-measured 2026-08-05, the same K=142 12-step run reads
+    // **4 539 121 664 B** max RSS and 12 124.4 MB peak live. Do not project a memory budget
+    // from the old figure — one agent did, and launched a run that breached the 4 GB cap.
     // `edge_edge_pairs_is_a_superset_of_brute_force` pins the contract and
     // `edge_edge_candidate_count_stays_bounded` pins the count.
     //

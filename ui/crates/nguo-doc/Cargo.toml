@@ -10,6 +10,13 @@ rust-version.workspace = true
 description = "The authoritative, serializable nguo-3d document: pieces, seams, parameters, materials, avatar."
 
 [dependencies]
+# Deflate + CRC-32 for the `.nguo` zip (src/zip.rs). NOT a new crate in the
+# tree: `png` -> `tiny-skia`/`vello` -> `iced` -> `nguo-app` already pulls
+# flate2 1.x, so the dependency graph, the licence allow-list and the generated
+# attribution are all unchanged. Declared here rather than in
+# `[workspace.dependencies]` because nguo-doc is its only direct user; hoist it
+# the day a second crate wants it.
+flate2 = "1"
 kurbo = { workspace = true, features = ["serde"] }
 nguo-measure = { workspace = true }
 nguo-pattern = { workspace = true }

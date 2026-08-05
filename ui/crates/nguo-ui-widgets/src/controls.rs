@@ -10,16 +10,26 @@ use nguo_ui_theme::{Rgba, Tokens};
 
 use crate::dock::Axis;
 use crate::icon::{icon, Icon};
-use crate::{color, ghost_button, hairline, overlay_surface, surface};
+use crate::{color, hairline, overlay_surface, surface};
 
 // ---------------------------------------------------------------------------
 // Toolbar + tool button
 // ---------------------------------------------------------------------------
 
+/// How much of a token a disabled control keeps. Low enough to read as "not
+/// available" next to a live sibling, high enough to still be legible — the
+/// button has to say what it *would* do.
+pub const DISABLED_ALPHA: f32 = 0.4;
+
 /// A tool button: icon, active state, tooltip, keyboard-shortcut hint.
 ///
-/// `on_press: None` renders it disabled (iced omits the press handler and
-/// reports `button::Status::Disabled`).
+/// `on_press: None` renders it **disabled**, and disabled has to *look* it: the
+/// glyph goes to [`DISABLED_ALPHA`] and the border with it. iced reports
+/// `button::Status::Disabled`, but the icon is an SVG whose tint is chosen
+/// outside the style closure, so the closure alone cannot grey it — hence
+/// `enabled` here rather than a fourth `match` arm. Until this existed a button
+/// with no handler was pixel-identical to a live one and simply did nothing when
+/// pressed.
 pub fn tool_button<'a, Message: Clone + 'a>(
     tokens: &'a Tokens,
     glyph: Icon,
@@ -30,10 +40,11 @@ pub fn tool_button<'a, Message: Clone + 'a>(
 ) -> Element<'a, Message> {
     let c = tokens.color;
     let size = tokens.metrics.control_height_lg;
-    let fg = if active {
-        c.on_accent
-    } else {
-        c.text_secondary
+    let enabled = on_press.is_some();
+    let fg = match (enabled, active) {
+        (false, _) => c.text_muted.alpha(DISABLED_ALPHA),
+        (true, true) => c.on_accent,
+        (true, false) => c.text_secondary,
     };
 
     let control = button(
@@ -46,20 +57,21 @@ pub fn tool_button<'a, Message: Clone + 'a>(
     .padding(0)
     .style(move |_theme, status| {
         let bg = match (active, status) {
+            (_, button::Status::Disabled) => Rgba::hex_a(0x00000000),
             (true, _) => c.accent,
             (false, button::Status::Hovered | button::Status::Pressed) => c.overlay,
             (false, _) => Rgba::hex_a(0x00000000),
         };
         button::Style {
             background: Some(color(bg).into()),
-            text_color: color(if active {
-                c.on_accent
-            } else {
-                c.text_secondary
-            }),
+            text_color: color(fg),
             border: iced::Border {
-                color: color(if active { c.accent } else { c.border }),
-                width: if active {
+                color: color(match (enabled, active) {
+                    (false, _) => c.border.alpha(DISABLED_ALPHA),
+                    (true, true) => c.accent,
+                    (true, false) => c.border,
+                }),
+                width: if active && enabled {
                     0.0
                 } else {
                     tokens.metrics.border_width
@@ -438,12 +450,7 @@ pub fn toast<'a, Message: Clone + 'a>(
     .align_y(iced::alignment::Vertical::Top);
 
     if let Some(msg) = on_dismiss {
-        line = line.push(
-            button(icon(Icon::Close, tokens.metrics.icon, c.text_muted))
-                .padding(tokens.space.xs)
-                .style(ghost_button(tokens))
-                .on_press(msg),
-        );
+        line = line.push(crate::icon_button(tokens, Icon::Close, c.text_muted, msg));
     }
 
     container(line)
