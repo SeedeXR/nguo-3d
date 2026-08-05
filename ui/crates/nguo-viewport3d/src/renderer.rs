@@ -8,6 +8,8 @@ use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 use nguo_gpu::scale::PhysicalRect;
 
+use crate::camera::Camera;
+use crate::grid::Floor;
 use crate::{Avatar, AvatarMesh, Vertex};
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -233,6 +235,195 @@ impl ClothRenderer {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.draw(0..VERTEX_COUNT, 0..1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ground-plane floor
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct GridUniforms {
+    inverse_view_projection: [[f32; 4]; 4],
+    eye_fade: [f32; 4],
+    steps: [f32; 4],
+    minor: [f32; 4],
+    major: [f32; 4],
+    axis_x: [f32; 4],
+    axis_z: [f32; 4],
+}
+
+fn rgba(c: nguo_ui_theme::Rgba, alpha: f32) -> [f32; 4] {
+    [c.r, c.g, c.b, alpha]
+}
+
+/// The infinite ground plane. One triangle, no vertex buffer, no depth
+/// attachment — it is background, so it is drawn first and writes no depth,
+/// which also means it cannot z-fight with a body standing on it.
+#[derive(Debug)]
+pub struct GridRenderer {
+    pipeline: wgpu::RenderPipeline,
+    uniforms: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+impl GridRenderer {
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("nguo grid"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("grid.wgsl").into()),
+        });
+
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nguo grid uniforms"),
+            size: std::mem::size_of::<GridUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("nguo grid bind group layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("nguo grid bind group"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniforms.as_entire_binding(),
+            }],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("nguo grid pipeline layout"),
+            bind_group_layouts: &[&layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("nguo grid pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            // No depth at all: the floor is behind everything by construction,
+            // so it neither tests nor writes. That is what lets the mesh pass
+            // keep owning the frame's one depth buffer, unchanged.
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline,
+            uniforms,
+            bind_group,
+        }
+    }
+
+    /// Upload one frame of floor. `tokens` supplies every colour — nothing in
+    /// the shader is a literal.
+    pub fn upload(
+        &self,
+        queue: &wgpu::Queue,
+        view_projection: Mat4,
+        camera: &Camera,
+        floor: Floor,
+        tokens: &nguo_ui_theme::Tokens,
+    ) {
+        let eye = camera.eye();
+        let c = &tokens.color;
+        queue.write_buffer(
+            &self.uniforms,
+            0,
+            bytemuck::bytes_of(&GridUniforms {
+                inverse_view_projection: view_projection.inverse().to_cols_array_2d(),
+                eye_fade: [eye.x, eye.y, eye.z, floor.fade_m],
+                steps: [floor.minor_m, floor.major_m, 0.0, 0.0],
+                minor: rgba(c.grid_line, 0.85),
+                major: rgba(c.border_strong, 0.55),
+                // ponytail: the palette has no axis roles, and `error` and
+                // `accent` are already the red and the blue in both themes —
+                // which is Blender's X-red / Z-blue convention
+                // (`overlays.rst:47`). Add real `axis_x` / `axis_z` tokens
+                // only if someone wants them to diverge from the status
+                // colours; today that would be two tokens with one caller.
+                axis_x: rgba(c.error, 0.75),
+                axis_z: rgba(c.accent, 0.75),
+            }),
+        );
+    }
+
+    /// Records the floor pass. Must run **before** the mesh passes: it has no
+    /// depth attachment, so ordering is the only thing putting it behind them.
+    pub fn draw(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        rect: PhysicalRect,
+        clip: PhysicalRect,
+    ) {
+        if rect.is_empty() || clip.is_empty() {
+            return;
+        }
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("nguo grid pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        pass.set_viewport(
+            rect.x as f32,
+            rect.y as f32,
+            rect.width as f32,
+            rect.height as f32,
+            0.0,
+            1.0,
+        );
+        pass.set_scissor_rect(clip.x, clip.y, clip.width, clip.height);
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.draw(0..3, 0..1);
     }
 }
 

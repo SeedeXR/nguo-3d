@@ -29,7 +29,14 @@ pub struct Material {
     pub contact_dynamic: f32, // 0.0
     /// Skin thickness offset. implicit-tier.
     pub contact_offset: f32, // 0.0 for Tri
-    /// Coulomb friction. implicit-tier.
+    /// Coulomb friction. implicit-tier: `Scene::build_implicit` maps it to
+    /// `ImplicitParams::friction`, which the self-collision stencil reads — the path
+    /// cloth-versus-static-body contact takes. The XPBD preview tier has no Coulomb
+    /// model, so this is inert in `Scene::build`.
+    ///
+    /// 0 by default, and 0 means the barrier is purely repulsive: nothing holds a
+    /// garment on a torso. Fabric presets set it; a bare `Material` does not, so no
+    /// existing scene changes behaviour.
     pub friction: f32, // 0.0
     /// Baraff-Witkin membrane stiffness (warp, weft, shear). All 0 = use the
     /// isotropic edge-spring model (`young_mod`) instead. Warp≠weft = anisotropic.
@@ -82,27 +89,39 @@ pub enum FabricPreset {
 impl FabricPreset {
     /// A [`Material`] configured for this fabric (membrane model; springs off).
     pub fn material(self) -> Material {
-        // (warp, weft, shear, bend, density kg/m²). Membrane keeps cloth roughly
-        // inextensible; bend governs drape/wrinkle. Values are tuned so drape is
-        // visible at ~1 m scale — a calibration starting point (see doc above).
-        let (warp, weft, shear, bend, density) = match self {
+        // (warp, weft, shear, bend, density kg/m², friction μ). Membrane keeps cloth
+        // roughly inextensible; bend governs drape/wrinkle. Values are tuned so drape
+        // is visible at ~1 m scale — a calibration starting point (see doc above).
+        //
+        // **μ is a calibration knob on the same footing as the stiffness table, not a
+        // measured coefficient.** What it is anchored to is a measurement of our own:
+        // cloth holds on a surface only while μ exceeds the tangent of the local
+        // slope, and `scene::tests::friction_holds_cloth_on_an_incline_and_zero_does_
+        // not` sweeps that — μ = 0 slides 327.5 mm down a 15° ramp in half a second,
+        // μ = tan 15° = 0.268 only just holds at 25.1 mm, μ = 0.35 holds at 10.1 mm.
+        // So the floor here is 0.20 (= tan 11.3°) and nothing is 0, because a preset
+        // shipping μ = 0 is a garment that cannot stay on a body. Ordering is the
+        // tested part: smooth filament (silk) slips most, napped and knitted surfaces
+        // grip more, leather most.
+        let (warp, weft, shear, bend, density, mu) = match self {
             // Woven, warp-dominant, crisp, heavy.
-            FabricPreset::Denim => (600.0, 400.0, 150.0, 12.0, 0.45),
+            FabricPreset::Denim => (600.0, 400.0, 150.0, 12.0, 0.45, 0.45),
             // Woven, balanced, medium.
-            FabricPreset::Cotton => (250.0, 220.0, 70.0, 3.0, 0.15),
+            FabricPreset::Cotton => (250.0, 220.0, 70.0, 3.0, 0.15, 0.35),
             // Very soft, low shear resistance, fluid drape, light.
-            FabricPreset::Silk => (90.0, 85.0, 12.0, 0.3, 0.06),
+            FabricPreset::Silk => (90.0, 85.0, 12.0, 0.3, 0.06, 0.20),
             // Knit: stretchy (low membrane), low bend, light.
-            FabricPreset::Jersey => (50.0, 45.0, 15.0, 0.8, 0.2),
+            FabricPreset::Jersey => (50.0, 45.0, 15.0, 0.8, 0.2, 0.40),
             // Thick, medium stretch, high bend (bulky), heavy.
-            FabricPreset::Wool => (180.0, 170.0, 60.0, 6.0, 0.35),
+            FabricPreset::Wool => (180.0, 170.0, 60.0, 6.0, 0.35, 0.40),
             // Nearly inextensible, isotropic, very high bend, heaviest.
-            FabricPreset::Leather => (1200.0, 1200.0, 400.0, 40.0, 0.9),
+            FabricPreset::Leather => (1200.0, 1200.0, 400.0, 40.0, 0.9, 0.60),
         };
         Material {
             young_mod: 0.0, // springs off — use the membrane model
             density,
             bend,
+            friction: mu,
             membrane_warp: warp,
             membrane_weft: weft,
             membrane_shear: shear,
@@ -152,7 +171,19 @@ mod tests {
                 p.material().membrane_warp > 0.0,
                 "{p:?} needs membrane stiffness"
             );
+            // No preset may ship μ = 0: with purely repulsive IPC barriers a
+            // frictionless garment cannot stay on a body at all. 0.20 = tan 11.3°,
+            // the shallowest slope such a preset could hold on. (A seventh variant
+            // cannot skip this — `material()`'s `match` is exhaustive, so forgetting
+            // it is a compile error, not a silent zero.)
+            assert!(
+                p.material().friction >= 0.20,
+                "{p:?} has μ = {} — a garment in it slides off a body",
+                p.material().friction
+            );
         }
+        // Friction ordering: smooth filament slips, grain and nap grip.
+        assert!(silk.friction < denim.friction && denim.friction < leather.friction);
         // Stiffness: leather > denim > silk.
         assert!(leather.membrane_warp > denim.membrane_warp);
         assert!(denim.membrane_warp > silk.membrane_warp);

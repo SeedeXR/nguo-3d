@@ -139,6 +139,60 @@ is safe. The only side effect is rewriting the frame files in `--out`.
 
 `engine` is the engine's own stdout summary, verbatim.
 
+### `garment_fit`
+`nguo garment-fit <garment-mesh> --units m|cm|mm|in
+ (--avatar male|female | --body <mesh> --girths <json>)
+ [--ease 0.03] [--factor F] [--fabric cotton] [--out scene.json]`
+— drop-and-fit: scale an imported garment onto a body and push out the residual
+overlap, which is what has to happen before `drape` on any mesh that was not
+modelled on this body.
+
+**`--units` is required and has no default.** No mesh format records its own
+unit: OBJ has no unit field and glTF only *specifies* metres without enforcing
+it. It cannot be inferred from size either — `samples/tote-bag` is 297 units,
+which is a believable 0.297 m bag in millimetres and an absurd 2.97 m one in
+centimetres. A wrong guess is a silent 100× garment that still "works"
+downstream, so the caller declares it.
+
+Nothing is silent on the output side either. The report carries the **proposed**
+factor as well as the applied one, the landmark that set it, the length the
+factor costs, and every landmark's girth residual — because the supporting
+landmark is chosen by geometry and can be wrong in a way no code fixes. Re-run
+with `--factor` to override. It also carries
+`garment.skin_broken_by_unit_scale`: loading a **rigged** `.glb`/`.gltf` in
+anything but `m` scales the positions and not the skin's `inverse_bind`
+translations, so the rig no longer matches the mesh. The loader logs that, and a
+log line is not a report.
+
+Measured, `samples/women-skirt` (35 535 v, centimetres) onto the male body:
+
+```json
+{
+  "resize": {
+    "factor": 1.3456, "proposed": 1.3456, "overridden": false,
+    "supporting": "waist", "ease": 0.03, "length_delta_m": 0.1495,
+    "landmarks": [
+      { "landmark": "waist", "body_girth_m": 0.8500, "garment_girth_m": 0.6507,
+        "demands_factor": 1.3456, "slack": 0.030 },
+      { "landmark": "hip",   "body_girth_m": 1.0537, "garment_girth_m": 1.2184,
+        "demands_factor": 0.8908, "slack": 0.556 },
+      { "landmark": "thigh", "body_girth_m": 0.6857, "garment_girth_m": 1.2764,
+        "demands_factor": 0.5533, "slack": 1.505 }
+    ]
+  },
+  "penetration": { "inside_before": 1069, "inside_after": 0, "converged": true,
+                   "edge_ratio": [0.5001, 1.4963] }
+}
+```
+
+Read the residuals: one uniform factor puts the waist on its 3 % ease and leaves
+the hip 56 % and the thigh 150 % loose. That is a skirt, and it is also the
+honest statement that a similarity is not grading. A garment that is simply the
+wrong size comes back with `inside_after > 0`; it is never dressed up as a fit.
+
+`--out` writes the fitted, ready-to-drape scene, so the pair is
+`garment-fit … --out s.json && nguo drape s.json`.
+
 ## 4. What is deliberately **not** here
 
 `nguo-doc` (the project/pattern document model) does not exist yet, so there is

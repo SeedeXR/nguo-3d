@@ -2,7 +2,7 @@
 //! Scene building and the per-piece cache (guide §7.3).
 //!
 //! # Layering
-//! grid/rulers → cached per-piece scenes (fill, edges, features) → interaction
+//! grid + origin cross → cached per-piece scenes (fill, edges, features) → interaction
 //! overlay (points, handles, snap indicator, rubber band).
 //!
 //! ponytail: the guide's layer list is global (all fills, then all edges). This
@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use nguo_doc::{Document, Edit, Feature, Piece, PieceId};
 use nguo_pattern::{EdgeGeom, EdgeSemantic};
 use nguo_ui_theme::{Rgba, Tokens};
-use vello::kurbo::{Affine, BezPath, Circle, Line, ParamCurve, Point, Rect, Stroke, Vec2};
+use vello::kurbo::{Affine, BezPath, Circle, Line, ParamCurve, Point, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 use vello::Scene;
 
@@ -47,6 +47,8 @@ const HAIRLINE_PX: f64 = 1.0;
 const POINT_R_PX: f64 = 3.5;
 const HANDLE_R_PX: f64 = 2.75;
 const NOTCH_PX: f64 = 7.0;
+/// Radius of the ring marking world (0, 0).
+const ORIGIN_R_PX: f64 = 4.0;
 /// Piece fill opacity. The canvas is paper: a piece is a tint, not a slab.
 const FILL_ALPHA: f32 = 0.10;
 
@@ -63,7 +65,7 @@ pub struct Interaction {
     pub rubber_band: Option<(Point, Point)>,
 }
 
-/// The grid and rulers, in **screen** space. Cheap and view-dependent, so it is
+/// The grid and the origin cross, in **screen** space. Cheap and view-dependent, so it is
 /// rebuilt every frame rather than cached and invalidated.
 pub fn grid_scene(view: &View, size: Vec2, tokens: &Tokens) -> Scene {
     let mut scene = Scene::new();
@@ -102,40 +104,28 @@ pub fn grid_scene(view: &View, size: Vec2, tokens: &Tokens) -> Scene {
     scene.stroke(&stroke, Affine::IDENTITY, faint, None, &minors);
     scene.stroke(&stroke, Affine::IDENTITY, line, None, &majors);
 
-    // Rulers: a strip per axis with a tick at every major line. The numbers come
-    // from `grid::labels`; drawing them needs a font this crate does not have.
-    let strip = ink(tokens.color.header.alpha(0.9));
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        strip,
-        None,
-        &Rect::new(0.0, 0.0, size.x, grid::RULER_PX),
-    );
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        strip,
-        None,
-        &Rect::new(0.0, 0.0, grid::RULER_PX, size.y),
-    );
-    let mut ticks = BezPath::new();
-    for x in grid::ticks(world.x0, world.x1, major) {
-        let sx = view.world_to_screen(Point::new(x, 0.0), size).x;
-        ticks.move_to((sx, 0.0));
-        ticks.line_to((sx, grid::RULER_PX));
-    }
-    for y in grid::ticks(world.y0, world.y1, major) {
-        let sy = view.world_to_screen(Point::new(0.0, y), size).y;
-        ticks.move_to((0.0, sy));
-        ticks.line_to((grid::RULER_PX, sy));
-    }
+    // The origin cross, replacing the two ruler strips (see `grid`'s docs). It
+    // is what a ruler was actually for: knowing where zero is. Drawn last so it
+    // sits over the grid, and in screen space so it is one weight at any zoom.
+    let o = view.world_to_screen(Point::ORIGIN, size);
+    let mut axes = BezPath::new();
+    axes.move_to((0.0, o.y));
+    axes.line_to((size.x, o.y));
+    axes.move_to((o.x, 0.0));
+    axes.line_to((o.x, size.y));
     scene.stroke(
-        &Stroke::new(HAIRLINE_PX),
+        &Stroke::new(HAIRLINE_PX * 1.5),
         Affine::IDENTITY,
         ink(tokens.color.text_muted),
         None,
-        &ticks,
+        &axes,
+    );
+    scene.stroke(
+        &Stroke::new(HAIRLINE_PX * 1.5),
+        Affine::IDENTITY,
+        ink(tokens.color.text_muted),
+        None,
+        &Circle::new(o, ORIGIN_R_PX),
     );
     scene
 }
@@ -356,6 +346,28 @@ pub fn overlay_scene(
 
     if let Some(snap) = it.snap {
         let at = to_screen(snap.world);
+
+        // An alignment snap draws its guide across the whole widget, which is
+        // the only thing that explains *what* it lined up with.
+        let guide = match snap.kind {
+            crate::snap::SnapKind::AlignX => {
+                Some(Line::new(Point::new(at.x, 0.0), Point::new(at.x, size.y)))
+            }
+            crate::snap::SnapKind::AlignY => {
+                Some(Line::new(Point::new(0.0, at.y), Point::new(size.x, at.y)))
+            }
+            _ => None,
+        };
+        if let Some(guide) = guide {
+            scene.stroke(
+                &Stroke::new(HAIRLINE_PX).with_dashes(0.0, [3.0, 4.0]),
+                Affine::IDENTITY,
+                ink(tokens.color.snap_indicator),
+                None,
+                &guide,
+            );
+        }
+
         // A diamond, so a snap indicator never reads as a point you can drag.
         let r = POINT_R_PX + 2.5;
         let mut path = BezPath::new();

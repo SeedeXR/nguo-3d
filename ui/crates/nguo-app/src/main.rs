@@ -105,6 +105,11 @@ struct App {
     paper: Tokens,
 
     doc: nguo_doc::Document,
+    /// Undo/redo. The canvas returns transactions and cannot apply them —
+    /// `Document`'s fields are private to `nguo-doc` — so this is the only
+    /// thing in the shell that can change the drawing, and undo therefore
+    /// covers every tool for free.
+    stack: nguo_canvas::CommandStack,
     /// The scene tree, projected from the document. Rebuilt on a document
     /// edit, not per frame — `view` borrows it.
     scene_rows: Vec<nguo_ui_widgets::tree::TreeNode>,
@@ -134,6 +139,12 @@ struct App {
     /// are: `status_item` borrows `&'a str`, so it is recomputed once per tick in
     /// `update` rather than allocated inside `view`.
     drape_label: String,
+    /// Cursor position in millimetres, and the live length of the pen's rubber
+    /// band while a run is in progress. This is what replaced the ruler
+    /// gutters: Marvelous Designer's own transcript describes the same thing —
+    /// "one tool that does both… as I am clicking and dragging I'm both drawing
+    /// lines and I'm measuring them at the same time".
+    cursor_label: String,
 
     /// The body in the viewport and behind the pattern canvas. `None` when
     /// `assets/avatars/` is absent — the assets are not in every clone, so a
@@ -225,7 +236,9 @@ impl App {
             process_label: "no active process".to_owned(),
             fps_label: "— fps".to_owned(),
             drape_label: drape_label(drape.as_ref()),
+            cursor_label: "—".to_owned(),
             doc,
+            stack: nguo_canvas::CommandStack::new(),
             scene_rows,
             layout,
             tree: TreeState::expanded(["garment", "piece/0"]),
@@ -430,26 +443,101 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 screen,
                 size,
             } => app.canvas_view.zoom_about(factor, screen, size),
-            nguo_canvas::Action::Picked { world, screen } => {
-                app.focus = Context::Canvas2d;
-                app.canvas_pick = Some(world);
-                let (_, _, scale) = nguo_gpu::window_geometry();
-                tracing::info!(
-                    target: "nguo_app",
-                    widget = "canvas",
-                    logical_x = screen.x,
-                    logical_y = screen.y,
-                    world_x = world.x,
-                    world_y = world.y,
-                    zoom = app.canvas_view.zoom,
-                    scale_factor = scale,
-                    "pointer picked the canvas"
-                );
-            }
+            nguo_canvas::Action::Pointer(pointer) => return on_canvas_pointer(app, pointer),
         },
     }
 
     Task::none()
+}
+
+/// The 2D authoring loop: pointer in, transaction out, document changed.
+///
+/// This is the whole of it. `Canvas2d` owns the tool state and cannot mutate
+/// the document; `CommandStack` is the only thing that can; `applied` tells the
+/// piece cache which scenes to re-encode. Forgetting that last call is slow
+/// (a full rebuild) and never stale — `SceneCache` counts revision ticks
+/// against the marks it was handed, so a caller who forgets loses the caching
+/// rather than rendering the wrong thing.
+/// Re-derive the chrome that reads off the document: the scene tree and the
+/// title-bar label. Every path that changes `App::doc` calls this, so the two
+/// cannot drift apart.
+fn refresh_doc_chrome(app: &mut App) {
+    app.scene_rows = shell::scene_tree(&app.doc);
+    app.doc_label = format!(
+        "{} · {} pieces",
+        app.doc.meta().name,
+        app.doc.pieces().len()
+    );
+}
+
+fn on_canvas_pointer(app: &mut App, pointer: nguo_canvas::Pointer) -> Task<Message> {
+    app.focus = Context::Canvas2d;
+    let tool = canvas_tool(app.active_tool.as_ref());
+
+    // `get_mut`, not `lock`: `update` has `&mut App`, so there is no contention
+    // to resolve and no poisoning to handle.
+    let view = app.canvas_view;
+    let Ok(canvas) = app.canvas2d.get_mut() else {
+        // A poisoned lock means a previous `draw` panicked. Dropping input for
+        // this frame beats taking the shell down.
+        return Task::none();
+    };
+    // `App::canvas_view` is the single source of truth and `draw` copies it in —
+    // but iced drains every queued message through `update` before the next
+    // `draw`, so a wheel-zoom and a pointer move batched into one frame would
+    // hit-test against the PRE-zoom view. Sync here too, where it is read.
+    // Same reason the opening zoom (`App::new`) reaches the canvas at all.
+    canvas.view = view;
+
+    if let Some(tx) = canvas.pointer(&app.doc, tool, pointer) {
+        canvas.applied(&tx);
+        if let Err(error) = app.stack.apply(&mut app.doc, tx) {
+            tracing::warn!(target: "nguo_app", %error, "the canvas produced an edit the document refused");
+        }
+        refresh_doc_chrome(app);
+    }
+
+    let canvas = app.canvas2d.get_mut().expect("checked above");
+    // Only a press moves the crosshair. It is the HiDPI hit-test proof, not a
+    // cursor follower — the overlay's snap diamond already tracks the pointer,
+    // and two marks chasing each other is noise.
+    if pointer.phase == nguo_canvas::Phase::Pressed {
+        app.canvas_pick = canvas.cursor;
+    }
+    app.cursor_label = cursor_label(canvas);
+    Task::none()
+}
+
+/// The active toolbar button, as something the canvas understands. The canvas
+/// knows nothing about `CommandId`, and this is the one place the mapping lives.
+///
+/// ponytail: only the three drawing tools and select are wired. The rest of the
+/// toolbar still logs "no handler yet" — mapping a button to a tool that does
+/// not exist would be worse than leaving it visibly unimplemented.
+fn canvas_tool(active: Option<&CommandId>) -> nguo_canvas::Tool {
+    use nguo_doc::pattern::EdgeSemantic;
+    match active.map(CommandId::as_str) {
+        Some("tool.polygon") => nguo_canvas::Tool::Draw(EdgeSemantic::Seam),
+        Some("tool.internal_line") => nguo_canvas::Tool::Draw(EdgeSemantic::Internal),
+        Some("tool.dart") => nguo_canvas::Tool::Draw(EdgeSemantic::DartLeg),
+        _ => nguo_canvas::Tool::Select,
+    }
+}
+
+/// Cursor position in mm, plus the live length of the pen's rubber band.
+fn cursor_label(canvas: &nguo_canvas::Canvas2d) -> String {
+    let Some(at) = canvas.cursor else {
+        return "—".to_owned();
+    };
+    match canvas.interaction.rubber_band {
+        Some((from, to)) => format!(
+            "{:.1}, {:.1} mm · {:.1} mm",
+            at.x,
+            at.y,
+            (to - from).hypot()
+        ),
+        None => format!("{:.1}, {:.1} mm", at.x, at.y),
+    }
 }
 
 /// Report only milestones that have actually completed.
@@ -632,7 +720,39 @@ fn dispatch(app: &mut App, id: CommandId) -> Task<Message> {
             if app.palette.is_some() {
                 close_palette(app);
             }
+            if let Ok(canvas) = app.canvas2d.get_mut() {
+                // Ends a pen run, leaving it open. The points it placed stay;
+                // undo is what removes them.
+                canvas.cancel();
+            }
             app.resolver.cancel();
+        }
+        // Undo covers every canvas tool, because every tool goes through the
+        // stack. `CommandStack::undo` returns a `bool` and not an edit list, so
+        // the piece cache is not told what changed — `SceneCache` notices the
+        // revision moved further than its marks explain and rebuilds the lot,
+        // which is slow for one frame and never stale.
+        "edit.undo" | "edit.redo" => {
+            // End any pen run FIRST. `PenState::Drawing { piece }` names a
+            // piece undo may be about to remove, and a pen pointing at a gone
+            // piece wedges the draw tool silently — every later click resolves
+            // `doc.piece(piece)` to an error the canvas swallows, with no log
+            // and no visible cause, until the user happens to press Esc.
+            if let Ok(canvas) = app.canvas2d.get_mut() {
+                canvas.cancel();
+            }
+            let moved = if id.as_str() == "edit.undo" {
+                app.stack.undo(&mut app.doc)
+            } else {
+                app.stack.redo(&mut app.doc)
+            };
+            match moved {
+                Ok(true) => refresh_doc_chrome(app),
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(target: "nguo_app", %error, command = id.as_str(), "history step failed")
+                }
+            }
         }
         "app.quit" | "window.close" => return iced::exit(),
         "view.cycle_pane_focus" => {
@@ -1275,6 +1395,7 @@ fn status_bar(app: &App) -> Element<'_, Message> {
     ];
 
     let right = vec![
+        w::status_item(t, Some(Icon::Measure), &app.cursor_label),
         w::status_item(t, Some(Icon::Refresh), &app.process_label),
         w::status_item(t, Some(Icon::Play), app.solver_state()),
         w::status_item(t, None, &app.fps_label),
@@ -1623,6 +1744,54 @@ mod tests {
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]
     struct Boom(&'static str, #[source] Option<Box<Boom>>);
+
+    /// Fifteen toolbar buttons were decorative because nothing mapped them onto
+    /// a canvas tool. Four of them are not any more, and this is the table.
+    #[test]
+    fn the_drawing_tools_reach_the_canvas() {
+        use nguo_doc::pattern::EdgeSemantic;
+        let tool = |id: &str| canvas_tool(Some(&CommandId::from(id)));
+        assert_eq!(
+            tool("tool.polygon"),
+            nguo_canvas::Tool::Draw(EdgeSemantic::Seam)
+        );
+        assert_eq!(
+            tool("tool.internal_line"),
+            nguo_canvas::Tool::Draw(EdgeSemantic::Internal)
+        );
+        assert_eq!(
+            tool("tool.dart"),
+            nguo_canvas::Tool::Draw(EdgeSemantic::DartLeg)
+        );
+        assert_eq!(tool("tool.select"), nguo_canvas::Tool::Select);
+        // An unwired button falls back to select rather than to a tool that
+        // does not exist — and no tool at all is select too.
+        assert_eq!(tool("tool.notch"), nguo_canvas::Tool::Select);
+        assert_eq!(canvas_tool(None), nguo_canvas::Tool::Select);
+    }
+
+    /// The readout that replaced the ruler gutters. `grid::labels` could never
+    /// be drawn — this crate has no font in the Vello path — so the numbers go
+    /// where there is already text.
+    #[test]
+    fn the_cursor_readout_reports_millimetres_and_a_live_length() {
+        let mut canvas = nguo_canvas::Canvas2d::new();
+        assert_eq!(
+            cursor_label(&canvas),
+            "—",
+            "nothing to report before a move"
+        );
+
+        canvas.cursor = Some(Point::new(123.45, -6.0));
+        assert_eq!(cursor_label(&canvas), "123.5, -6.0 mm");
+
+        canvas.interaction.rubber_band = Some((Point::ORIGIN, Point::new(30.0, 40.0)));
+        assert_eq!(
+            cursor_label(&canvas),
+            "123.5, -6.0 mm · 50.0 mm",
+            "a 3-4-5 rubber band measures itself while you draw it"
+        );
+    }
 
     /// The status line's three verdicts, and that an error outranks a warning.
     /// It is the one sentence that tells a drafter whether Space will work.

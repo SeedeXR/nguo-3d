@@ -92,6 +92,60 @@ pub enum Command {
         #[arg(long = "out")]
         out_dir: Option<PathBuf>,
     },
+    /// Scale an imported garment onto a body and push out the residual overlap.
+    GarmentFit {
+        /// Path to the garment mesh (.obj, .stl, .gltf, .glb, .usda).
+        garment: PathBuf,
+        /// Unit the garment file is authored in. Required: no mesh format records
+        /// its own unit and guessing it is a silent 100x.
+        #[arg(long, value_enum)]
+        units: UnitsArg,
+        /// Avatar bundle key ("male", "female"): body and girths come from it.
+        #[arg(long, conflicts_with = "body")]
+        avatar: Option<String>,
+        /// Body mesh in metres, instead of --avatar. Needs --girths.
+        #[arg(long)]
+        body: Option<PathBuf>,
+        /// Body girths as JSON: [{"landmark","circumference_m","height_m"}, ...].
+        /// Required with --body; overrides the manifest with --avatar.
+        #[arg(long)]
+        girths: Option<String>,
+        /// Girth ease the factor targets. 0.03 = 3 % looser than the body.
+        #[arg(long)]
+        ease: Option<f32>,
+        /// Override the proposed factor. The proposal is still reported.
+        #[arg(long)]
+        factor: Option<f32>,
+        /// Fabric preset written into the scene.
+        #[arg(long)]
+        fabric: Option<String>,
+        /// Write the fitted, ready-to-drape scene JSON here.
+        #[arg(long = "out")]
+        out: Option<PathBuf>,
+    },
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+pub enum UnitsArg {
+    /// Metres.
+    M,
+    /// Centimetres — most DCC garment exports.
+    Cm,
+    /// Millimetres.
+    Mm,
+    /// Inches.
+    In,
+}
+
+impl UnitsArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            UnitsArg::M => "m",
+            UnitsArg::Cm => "cm",
+            UnitsArg::Mm => "mm",
+            UnitsArg::In => "in",
+        }
+    }
 }
 
 impl Command {
@@ -128,6 +182,36 @@ impl Command {
                     "tier": tier.as_str(),
                     "frames": frames,
                     "out_dir": out_dir.as_ref().map(|d| d.display().to_string()),
+                }),
+            ),
+            Command::GarmentFit {
+                garment,
+                units,
+                avatar,
+                body,
+                girths,
+                ease,
+                factor,
+                fabric,
+                out,
+            } => (
+                "garment_fit",
+                json!({
+                    "garment": garment.display().to_string(),
+                    "units": units.as_str(),
+                    "avatar": avatar,
+                    "body": body.as_ref().map(|p| p.display().to_string()),
+                    // Passed through as JSON so the shape stays the operation's, not a
+                    // second flag grammar that can drift from the schema. Unparseable
+                    // text is forwarded verbatim: `arg_girths` then names the flag and
+                    // echoes what it got, which beats a parse error with no context.
+                    "girths": girths.as_ref().map(|g| {
+                        serde_json::from_str::<Value>(g).unwrap_or_else(|_| json!(g))
+                    }),
+                    "ease": ease,
+                    "factor": factor,
+                    "fabric": fabric,
+                    "out": out.as_ref().map(|p| p.display().to_string()),
                 }),
             ),
         }

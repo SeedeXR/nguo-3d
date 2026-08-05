@@ -65,6 +65,22 @@ pub fn closest_point_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
 /// `∂d/∂p = n` and `∂d/∂v = -w_v * n` for each triangle vertex. Vertices that are not part
 /// of the closest feature simply carry weight 0. Verified against central finite
 /// differences in `analytic_gradient_tests`.
+///
+/// Every denominator below is a squared edge length in exact arithmetic (`d1 - d3 = |ab|²`,
+/// `d2 - d6 = |ac|²`, `(d4 - d3) + (d5 - d6) = |bc|²`, `va + vb + vc = |ab × ac|²`), so a
+/// collapsed edge divides `0/0` and returns NaN, which then poisons the whole solve. A
+/// welded seam or a zero-area sliver is a collapsed edge, so real meshes ship these. All
+/// four are guarded and fall back to an endpoint of the collapsed feature, which IS the
+/// closest point once the feature has no extent.
+///
+/// Only the `|ab|²` guard is reachable, and `degenerate_triangles_never_produce_nan` covers
+/// it — remove it and that test returns NaN. Measured, not assumed: 80 M queries over
+/// welded / collinear / sliver / near-welded triangles at scales 1e-4 to 1e4 took the `|ac|²`,
+/// `|bc|²` and `|ab × ac|²` branches 6.2 M / 6.2 M / 444 k times and hit a zero denominator
+/// **zero** times, because a collapsed `ac` or `bc` forces `vc` (or `vb`) to exactly 0 and an
+/// earlier branch claims the point first, and the face branch is only reached when the area is
+/// nonzero. Those three are unreachable insurance, kept because a NaN here costs a whole
+/// drape and the branch costs nothing; do not go looking for a test that exercises them.
 pub fn closest_point_on_triangle_bary(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (Vec3, [f32; 3]) {
     let ab = b - a;
     let ac = c - a;
@@ -82,7 +98,8 @@ pub fn closest_point_on_triangle_bary(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (Ve
     }
     let vc = d1 * d4 - d3 * d2;
     if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        let v = d1 / (d1 - d3);
+        let den = d1 - d3; // |ab|²
+        let v = if den != 0.0 { d1 / den } else { 0.0 };
         return (a + ab * v, [1.0 - v, v, 0.0]);
     }
     let cp = p - c;
@@ -93,15 +110,21 @@ pub fn closest_point_on_triangle_bary(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (Ve
     }
     let vb = d5 * d2 - d1 * d6;
     if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        let w = d2 / (d2 - d6);
+        let den = d2 - d6; // |ac|²
+        let w = if den != 0.0 { d2 / den } else { 0.0 };
         return (a + ac * w, [1.0 - w, 0.0, w]);
     }
     let va = d3 * d6 - d5 * d4;
     if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        let den = (d4 - d3) + (d5 - d6); // |bc|²
+        let w = if den != 0.0 { (d4 - d3) / den } else { 0.0 };
         return (b + (c - b) * w, [0.0, 1.0 - w, w]);
     }
-    let denom = 1.0 / (va + vb + vc);
+    let den = va + vb + vc; // |ab × ac|²
+    if den == 0.0 {
+        return (a, [1.0, 0.0, 0.0]);
+    }
+    let denom = 1.0 / den;
     let v = vb * denom;
     let w = vc * denom;
     (a + ab * v + ac * w, [1.0 - v - w, v, w])
@@ -814,11 +837,10 @@ pub fn point_tri_distance_grad(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (f32, [Vec
     (d, [n, -w[0] * n, -w[1] * n, -w[2] * n])
 }
 
-/// Point-triangle gap **signed by which side of the triangle `p` lies on**, plus its
+/// Point-triangle gap **signed by which side of the collider `p` lies on**, plus its
 /// gradient w.r.t. `[p,a,b,c]`. The magnitude is the true unsigned distance (exactly
-/// [`point_tri_distance_grad`]); the sign is that of `(p − q)·((b−a)×(c−a))`, positive on
-/// the triangle's normal side. For a CLOSED, OUTWARD-ORIENTED mesh that is the surface's
-/// signed distance field near the surface.
+/// [`point_tri_distance_grad`]); `inside` negates both it and the gradient. For a CLOSED,
+/// OUTWARD-ORIENTED mesh that is the surface's signed distance field near the surface.
 ///
 /// This is what a **static body collider** needs and the unsigned distance cannot give.
 /// The unsigned gradient points away from the surface *on whichever side `p` already is*,
@@ -827,29 +849,115 @@ pub fn point_tri_distance_grad(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (f32, [Vec
 /// side carried in the sign, the same barrier pushes it back out (use [`cubic_barrier`]
 /// for the negative branch; the log barrier is undefined there).
 ///
-/// Outside (`gap > 0`) it returns bit-identically what [`point_tri_distance_grad`]
+/// **`inside` is a property of `p` and the whole collider, never of this one triangle,**
+/// and that is the whole reason it is a parameter rather than something computed here.
+/// Every facet within `dhat` contributes a barrier term, not only the closest, so a facet
+/// whose plane `p` happens to sit behind — across a shared *convex* edge — used to report
+/// `p` as inside and push it further out of the body. Neither the facet's own normal nor
+/// its interpolated pseudonormal can tell: Bærentzen & Aanæs's criterion holds at the
+/// closest point of the SURFACE, not of an arbitrary facet. Take the side from the
+/// mesh-wide closest point ([`surface_normal_at`] over [`pseudonormals`]); the solver does
+/// that once per vertex in `ImplicitSolver::collider_sides`.
+///
+/// Outside (`inside == false`) it returns bit-identically what [`point_tri_distance_grad`]
 /// returns, so non-penetrating contact is untouched.
 ///
 /// Not for cloth-cloth self-collision: two cloth sheets have no consistent "outside", and
 /// CCD is what keeps them from crossing. Wiring a signed barrier into cloth-cloth contact
 /// was attempted and reverted because it regressed — see the `#[ignore]` reason on
 /// `implicit.rs`'s parallel-sheet slam test.
-pub fn signed_point_tri_distance_grad(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (f32, [Vec3; 4]) {
-    let (q, w) = closest_point_on_triangle_bary(p, a, b, c);
-    let e = p - q;
-    let d = e.length();
-    if d < 1.0e-12 {
-        return (d, [Vec3::ZERO; 4]); // coincident: not differentiable, and side is undefined
-    }
-    // A zero-area triangle has no side, so its cross product is zero and the dot is too —
-    // `>= 0` keeps such a stencil on the unsigned branch rather than flipping it randomly.
-    let s = if e.dot((b - a).cross(c - a)) < 0.0 {
-        -1.0
+pub fn signed_point_tri_distance_grad(
+    p: Vec3,
+    a: Vec3,
+    b: Vec3,
+    c: Vec3,
+    inside: bool,
+) -> (f32, [Vec3; 4]) {
+    let (d, g) = point_tri_distance_grad(p, a, b, c);
+    if inside {
+        (-d, g.map(|v| -v))
     } else {
-        1.0
+        (d, g)
+    }
+}
+
+/// The surface normal to take the **side** from at a closest point with barycentric weights
+/// `bary` on a facet with face normal `face` and per-corner pseudonormals `pn`.
+///
+/// Bærentzen & Aanæs: the sign of a point's distance to a mesh is given by the closest
+/// *face's* normal only when the closest feature is that face's interior. On an edge or a
+/// vertex — every armpit, every crotch, every convex crease — it is the angle-weighted
+/// pseudonormal instead, and interpolating the per-vertex field over the facet is the
+/// smooth version of the same test: it tends to the vertex pseudonormal at a corner and to
+/// the mean of the two incident faces along an edge, which are exactly the two
+/// pseudonormals that matter, and needs no adjacency structure at query time.
+///
+/// A degenerate facet (zero `face`, zero pseudonormals) returns `ZERO`, which has no side.
+#[inline]
+pub fn surface_normal_at(bary: [f32; 3], face: Vec3, pn: [Vec3; 3]) -> Vec3 {
+    if bary.iter().all(|&b| b > 1.0e-4) {
+        face
+    } else {
+        (pn[0] * bary[0] + pn[1] * bary[1] + pn[2] * bary[2]).normalize_or_zero()
+    }
+}
+
+/// Angle-weighted pseudonormals, one per entry of `positions`, accumulated over `tris`.
+///
+/// **This is what makes the inside test right at a crease.** See [`surface_normal_at`] for
+/// why a face normal is not enough. Two things it has to get right, both measured wrong
+/// first:
+///
+/// * **Welding.** A glTF proxy splits vertices on UV and normal seams (the male collision
+///   proxy is 10 230 glTF vertices for 7 498 unique positions), and an angle sum over half
+///   of a vertex's incident faces is not its pseudonormal. Positions are welded on exact
+///   bits, which is right because a seam's copies come from one accessor value; `-0.0` is
+///   folded to `0.0` so the two spellings of zero weld together.
+/// * **Zero-area triangles** have no side, so they contribute nothing rather than a
+///   normalised garbage direction.
+///
+/// `tris` may cover only part of `positions` — the solver passes the collider's triangles
+/// against the whole scene's vertex array — and entries no triangle touches come back
+/// `ZERO`. Vertices on the fringe of a *cropped* mesh get a partial angle sum; every vertex
+/// strictly inside the crop has its whole triangle star and so an exact pseudonormal.
+pub fn pseudonormals(positions: &[Vec3], tris: &[[u32; 3]]) -> Vec<Vec3> {
+    // -0.0 and 0.0 are the same coordinate and must weld.
+    let key = |p: Vec3| {
+        p.to_array().map(|c| {
+            if c == 0.0 {
+                0.0f32.to_bits()
+            } else {
+                c.to_bits()
+            }
+        })
     };
-    let n = (s / d) * e;
-    (s * d, [n, -w[0] * n, -w[1] * n, -w[2] * n])
+    let mut weld = std::collections::HashMap::with_capacity(positions.len());
+    let of: Vec<u32> = positions
+        .iter()
+        .map(|p| {
+            let next = weld.len() as u32;
+            *weld.entry(key(*p)).or_insert(next)
+        })
+        .collect();
+
+    let mut acc = vec![Vec3::ZERO; weld.len()];
+    for t in tris {
+        let p = t.map(|i| positions[i as usize]);
+        let face = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
+        if face == Vec3::ZERO {
+            continue;
+        }
+        for k in 0..3 {
+            let (u, v) = (
+                (p[(k + 1) % 3] - p[k]).normalize_or_zero(),
+                (p[(k + 2) % 3] - p[k]).normalize_or_zero(),
+            );
+            acc[of[t[k] as usize] as usize] += face * u.dot(v).clamp(-1.0, 1.0).acos();
+        }
+    }
+    of.iter()
+        .map(|&w| acc[w as usize].normalize_or_zero())
+        .collect()
 }
 
 /// Per-contact **dynamic** stiffness — a pragmatic port of the reference
@@ -1165,6 +1273,61 @@ mod analytic_gradient_tests {
             );
             // Consistent with the weight-free entry point.
             assert!((closest_point_on_triangle(p, a, b, c) - q).length() < 1.0e-6);
+        }
+    }
+
+    /// Degenerate triangles must still return a finite point and finite weights. Every
+    /// denominator in the 7-region walk is a squared edge length (`d1 - d3 = |ab|²`,
+    /// `d2 - d6 = |ac|²`, `(d4 - d3) + (d5 - d6) = |bc|²`), so a collapsed or
+    /// rounded-to-collapsed edge divides `0/0` and poisons the whole solve with NaN.
+    /// Real meshes ship these: a welded seam or a zero-area sliver is a collapsed edge.
+    #[test]
+    fn degenerate_triangles_never_produce_nan() {
+        let o = Vec3::new(1.0e4, 0.0, 0.0); // large offset: differences round to zero in f32
+        let cases: [(&str, [Vec3; 3]); 8] = [
+            ("ab collapsed", [Vec3::ZERO, Vec3::ZERO, Vec3::X]),
+            ("ac collapsed", [Vec3::ZERO, Vec3::X, Vec3::ZERO]),
+            ("bc collapsed", [Vec3::ZERO, Vec3::X, Vec3::X]),
+            ("all collapsed", [Vec3::ZERO, Vec3::ZERO, Vec3::ZERO]),
+            ("collinear", [Vec3::ZERO, Vec3::X, Vec3::new(2.0, 0.0, 0.0)]),
+            ("ab collapsed, offset", [o, o, o + Vec3::X]),
+            ("ac collapsed, offset", [o, o + Vec3::X, o]),
+            ("bc collapsed, offset", [o, o + Vec3::X, o + Vec3::X]),
+        ];
+        for (name, [a, b, c]) in cases {
+            let mid = (a + b + c) / 3.0;
+            for d in [
+                Vec3::new(0.5, 1.0, 0.0),
+                Vec3::new(-0.5, 1.0, 0.0),
+                Vec3::new(1.5, 1.0, 0.0),
+                Vec3::new(0.5, -1.0, 0.25),
+                Vec3::new(3.0, 0.0, 0.0),
+                Vec3::ZERO,
+            ] {
+                let p = mid + d;
+                let (q, w) = closest_point_on_triangle_bary(p, a, b, c);
+                assert!(q.is_finite(), "{name}: p={p:?} gave q={q:?}");
+                assert!(
+                    w.iter().all(|x| x.is_finite()),
+                    "{name}: p={p:?} gave weights {w:?}"
+                );
+                let sum = w[0] + w[1] + w[2];
+                assert!(
+                    (sum - 1.0).abs() < 1.0e-5,
+                    "{name}: p={p:?} weights {w:?} sum to {sum}"
+                );
+                let rebuilt = w[0] * a + w[1] * b + w[2] * c;
+                assert!(
+                    (rebuilt - q).length() < 1.0e-3,
+                    "{name}: p={p:?} weights {w:?} rebuild {rebuilt:?}, not {q:?}"
+                );
+                // The weight-free entry point must agree, NaN included.
+                assert_eq!(
+                    closest_point_on_triangle(p, a, b, c),
+                    q,
+                    "{name}: p={p:?} entry points disagree"
+                );
+            }
         }
     }
 
@@ -1651,19 +1814,34 @@ mod tests {
             "fixture is wound the wrong way"
         );
 
+        // One triangle IS its own whole mesh, so its pseudonormals are its face normal and
+        // `surface_normal_at` reduces to that — the side test the caller must perform.
+        let pn = pseudonormals(&[a, b, c], &[[0, 1, 2]]);
+        let side = |p: Vec3| {
+            let (q, l) = closest_point_on_triangle_bary(p, a, b, c);
+            let n = surface_normal_at(
+                l,
+                (b - a).cross(c - a).normalize_or_zero(),
+                [pn[0], pn[1], pn[2]],
+            );
+            (p - q).dot(n) < 0.0
+        };
+
         for &p in &[
             Vec3::new(0.0, 0.3, 0.0),    // over the face
             Vec3::new(0.05, 0.001, 0.1), // grazing the face
             Vec3::new(3.0, 0.2, 0.0),    // off to the side, closest feature is an edge
         ] {
             let (du, gu) = point_tri_distance_grad(p, a, b, c);
-            let (ds, gs) = signed_point_tri_distance_grad(p, a, b, c);
+            assert!(!side(p), "point {p} above the triangle read as inside");
+            let (ds, gs) = signed_point_tri_distance_grad(p, a, b, c, side(p));
             assert_eq!(du, ds, "outside: signed gap must be the unsigned distance");
             assert_eq!(gu, gs, "outside: signed gradient must be untouched");
 
             // Mirror through the plane: same distance, opposite sign, opposite gradient.
             let q = Vec3::new(p.x, -p.y, p.z);
-            let (dm, gm) = signed_point_tri_distance_grad(q, a, b, c);
+            assert!(side(q), "mirrored point {q} read as outside");
+            let (dm, gm) = signed_point_tri_distance_grad(q, a, b, c, side(q));
             assert!(
                 (dm + du).abs() < 1e-6,
                 "inside: gap {dm} should be −{du} for the mirrored point {q}"
@@ -1682,8 +1860,19 @@ mod tests {
             );
         }
 
-        // A zero-area triangle has no side; it must not flip anything.
-        let (dz, _) = signed_point_tri_distance_grad(Vec3::new(0.0, -1.0, 0.0), a, a, a);
+        // A zero-area triangle has no side; it must not flip anything. Its face normal and
+        // its pseudonormals are all ZERO, so `surface_normal_at` returns ZERO, the dot is
+        // zero, and the side test stays on the outside branch.
+        let dpn = pseudonormals(&[a, a, a], &[[0, 1, 2]]);
+        assert_eq!(
+            dpn,
+            vec![Vec3::ZERO; 3],
+            "a collapsed triangle has no normal"
+        );
+        let z = Vec3::new(0.0, -1.0, 0.0);
+        let (q, l) = closest_point_on_triangle_bary(z, a, a, a);
+        let n = surface_normal_at(l, Vec3::ZERO, [dpn[0], dpn[1], dpn[2]]);
+        let (dz, _) = signed_point_tri_distance_grad(z, a, a, a, (z - q).dot(n) < 0.0);
         assert!(dz > 0.0, "degenerate triangle produced a signed gap {dz}");
     }
 

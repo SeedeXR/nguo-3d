@@ -36,7 +36,9 @@ impl Default for Camera {
 /// Keeps the turntable off the poles, where the up-vector degenerates.
 const PITCH_LIMIT: f32 = 1.5533; // 89 degrees
 const NEAR: f32 = 0.05;
-const FAR: f32 = 100.0;
+/// Far clip, metres. Public because the ground grid has to fade out *inside*
+/// the frustum — a fade that ends past this is a hard clipped edge instead.
+pub const FAR: f32 = 100.0;
 
 /// Headroom [`Camera::frame_standing`] leaves around the figure. 1.0 would put
 /// the crown of the head exactly on the top edge of the widget.

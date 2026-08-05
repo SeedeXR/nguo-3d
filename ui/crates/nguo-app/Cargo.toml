@@ -50,6 +50,11 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+# `drape::industrial` only: the drop-and-fit chain (resize + resolve_penetration)
+# that the `nguo garment-fit` operation ships as the production caller. A dev
+# dependency because nothing in the shell imports a mesh yet — there is no file
+# dialog and `main.rs` has no Import message. Promote it when there is one.
+engine-api = { workspace = true }
 wgpu = { workspace = true }
 bytemuck = { workspace = true }
 thiserror = { workspace = true }

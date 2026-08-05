@@ -21,9 +21,13 @@ pub const PROPERTIES: &str = "properties";
 /// Indices of the root split's children. The root is a single 4-way horizontal
 /// split, which is what makes [`enforce_canvas_minimum`] a two-line rule
 /// instead of a tree walk.
+/// **3D sits left of 2D**, as it does in both CLO3D and Marvelous Designer
+/// (instructions/ui-references/, session-2 capture). The two work areas are
+/// interchangeable to [`enforce_canvas_minimum`], so the swap is these two
+/// constants and the order of the children below.
 const I_SCENE: usize = 0;
-const I_CANVAS: usize = 1;
-const I_VIEWPORT: usize = 2;
+const I_VIEWPORT: usize = 1;
+const I_CANVAS: usize = 2;
 const I_PROPERTIES: usize = 3;
 
 /// The floor a work area may not be pushed below, in logical px.
@@ -36,6 +40,12 @@ pub const CANVAS_MIN: f32 = 320.0;
 /// The shipped layout. Ratios put the two work areas at two thirds of the
 /// window at 1280 px, which is also where [`enforce_canvas_minimum`] would put
 /// them anyway.
+///
+/// The chrome columns come from the references, not from taste: both CLO3D and
+/// Marvelous Designer land on a **~22.5 % right dock** and a narrow left rail,
+/// while their two work areas split the middle almost exactly evenly (32.3 /
+/// 32.2 %). Ours were 17 / 18 — a left rail twice as wide as either reference
+/// and a properties column too narrow to put a number field in.
 pub fn default_layout(tokens: &Tokens) -> DockLayout {
     let root = Node::Split(Split::with_ratios(
         Axis::Horizontal,
@@ -45,12 +55,12 @@ pub fn default_layout(tokens: &Tokens) -> DockLayout {
                 vec![Tab::new(SCENE, "Scene").with_icon(Icon::Layers)],
             )),
             Node::leaf(Panel::new(
-                CANVAS,
-                vec![Tab::new(CANVAS, "2D Pattern").with_icon(Icon::Grid)],
-            )),
-            Node::leaf(Panel::new(
                 VIEWPORT,
                 vec![Tab::new(VIEWPORT, "3D Garment").with_icon(Icon::Garment)],
+            )),
+            Node::leaf(Panel::new(
+                CANVAS,
+                vec![Tab::new(CANVAS, "2D Pattern").with_icon(Icon::Grid)],
             )),
             Node::leaf(Panel::new(
                 PROPERTIES,
@@ -60,7 +70,7 @@ pub fn default_layout(tokens: &Tokens) -> DockLayout {
                 ],
             )),
         ],
-        vec![0.17, 0.33, 0.32, 0.18],
+        vec![0.11, 0.33, 0.33, 0.23],
     ));
 
     DockLayout::new(root, tokens)
@@ -90,12 +100,12 @@ pub fn enforce_canvas_minimum(layout: &mut DockLayout, total: f32) -> bool {
 
     let before = split.ratios().to_vec();
 
-    // Divider 0 sits between the scene tree and the 2D canvas: a negative
-    // delta shrinks the tree. Divider 2 sits between the 3D viewport and the
-    // properties panel: a positive delta shrinks the properties panel. Both
-    // drags are clamped by the dock to `MIN_PANEL`, so a panel yields exactly
-    // as far as it legally can and no further.
-    for (work, divider_index, sign) in [(I_CANVAS, 0usize, -1.0f32), (I_VIEWPORT, 2usize, 1.0)] {
+    // Divider 0 sits between the scene tree and the first work area: a
+    // negative delta shrinks the tree. Divider 2 sits between the second work
+    // area and the properties panel: a positive delta shrinks the properties
+    // panel. Both drags are clamped by the dock to `MIN_PANEL`, so a panel
+    // yields exactly as far as it legally can and no further.
+    for (work, divider_index, sign) in [(I_VIEWPORT, 0usize, -1.0f32), (I_CANVAS, 2usize, 1.0)] {
         let deficit = CANVAS_MIN - split.sizes(total, collapsed, divider)[work];
         if deficit > 0.0 {
             split.drag_divider(divider_index, sign * deficit, total, collapsed, divider);
@@ -196,6 +206,59 @@ mod tests {
         assert!(
             !enforce_canvas_minimum(&mut layout, WIDTH),
             "the shipped layout should not need correcting"
+        );
+    }
+
+    /// The pane ORDER is load-bearing, not cosmetic: `enforce_canvas_minimum`
+    /// hardcodes divider 0 and divider 2 as the ones that squeeze the chrome,
+    /// which is only true while the two work areas are the middle two
+    /// children. Reordering the `vec!` without swapping `I_VIEWPORT` and
+    /// `I_CANVAS` would silently starve the wrong panel, and every other test
+    /// in this file would still pass.
+    #[test]
+    fn the_work_areas_are_the_middle_two_panes_with_3d_first() {
+        let layout = default_layout(&Tokens::dark());
+        let ids: Vec<&str> = match &layout.root {
+            Node::Split(s) => s
+                .children()
+                .iter()
+                .map(|c| match c {
+                    Node::Leaf(p) => p.id.as_str(),
+                    Node::Split(_) => "split",
+                })
+                .collect(),
+            Node::Leaf(_) => vec![],
+        };
+        assert_eq!(ids, vec![SCENE, VIEWPORT, CANVAS, PROPERTIES]);
+        assert_eq!(ids[I_SCENE], SCENE);
+        assert_eq!(ids[I_VIEWPORT], VIEWPORT);
+        assert_eq!(ids[I_CANVAS], CANVAS);
+        assert_eq!(ids[I_PROPERTIES], PROPERTIES);
+    }
+
+    /// The chrome columns come from the reference tools; the work areas split
+    /// what is left evenly. Was 17 / 33 / 32 / 18 — a left rail twice either
+    /// reference's and a right dock five points short of both.
+    #[test]
+    fn the_shipped_layout_matches_the_reference_proportions() {
+        let mut layout = default_layout(&Tokens::dark());
+        let s = sizes(&mut layout, WIDTH);
+        let total: f32 = s.iter().sum();
+        let share = |i: usize| s[i] / total;
+
+        assert!(
+            (0.20..0.25).contains(&share(I_PROPERTIES)),
+            "right dock is {:.1} %, references land on 22.5",
+            share(I_PROPERTIES) * 100.0
+        );
+        assert!(
+            share(I_SCENE) < 0.14,
+            "left rail is {:.1} %",
+            share(I_SCENE) * 100.0
+        );
+        assert!(
+            (share(I_CANVAS) - share(I_VIEWPORT)).abs() < 0.01,
+            "the two work areas should split the middle evenly: {s:?}"
         );
     }
 

@@ -267,8 +267,15 @@ pub struct Metrics {
     pub icon_lg: f32,
     /// Precise 1px chrome. Physical-pixel snapping is the renderer's job.
     pub border_width: f32,
-    /// Grab strip between docked panels.
+    /// Grab strip between docked panels — what the *layout* reserves and what
+    /// the pointer has to hit. Wider than the line you can see, because a
+    /// 6 px target is a target you miss: Blender, Figma and pane_grid all give
+    /// the divider leeway around a hairline.
     pub divider: f32,
+    /// The line actually painted inside that strip, centred. Marvelous
+    /// Designer measures 7 px in the captured reference frames; 6 px plus the
+    /// panel hairlines on either side reads the same.
+    pub divider_line: f32,
     /// Height of a collapsed panel (its header only).
     pub panel_header: f32,
     pub tab_height: f32,
@@ -386,7 +393,8 @@ const METRICS: Metrics = Metrics {
     icon: 16.0,
     icon_lg: 20.0,
     border_width: 1.0,
-    divider: 6.0,
+    divider: 12.0,
+    divider_line: 6.0,
     panel_header: 28.0,
     tab_height: 28.0,
     status_bar_height: 24.0,
@@ -722,7 +730,10 @@ mod tests {
         assert!(f.micro >= 11.0);
         // Hit targets stay grabbable.
         assert!(t.metrics.control_height >= 24.0);
-        assert!(t.metrics.divider >= 4.0);
+        // The grab strip is what you have to hit; the line is what you see.
+        assert!(t.metrics.divider >= 12.0, "{}", t.metrics.divider);
+        assert!(t.metrics.divider_line <= t.metrics.divider);
+        assert!(t.metrics.divider_line >= 4.0);
     }
 
     #[test]

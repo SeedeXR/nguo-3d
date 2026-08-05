@@ -56,11 +56,23 @@ pub const PLACEMENT_GAP: f32 = 1.0e-3;
 /// **Divergence:** Blender's cloth-friction slider is a dimensionless 0..80 factor,
 /// not a Coulomb coefficient. ClothDrop uses the maximum of that range, so we carry
 /// the *ratio* 80/80 = 1.0. mu = 1.0 is deliberately high — that is the add-on's
-/// intent (stop the cloth sliding off), not a measured fabric value.
+/// intent (stop the cloth sliding off), not a measured fabric value, and it is why
+/// this constant overrides whatever the fabric preset declares (`drape_material`):
+/// the drop helper's job is settling, not fabric fidelity.
 ///
-/// Note this field is currently inert: `Material::friction` is marked
-/// implicit-tier (`material.rs`) and neither `Scene::build` nor
-/// `Scene::build_implicit` reads it yet. Setting it is forward-compatible only.
+/// For scale, the sweep lives beside the test that produced it —
+/// `scene::tests::friction_holds_cloth_on_an_incline_and_zero_does_not`, a 15° ramp
+/// over half a second. Read it there rather than from a transcription here. Its
+/// shape is what matters to this constant: the curve is flat above ~0.45, so μ = 1.0
+/// buys a few millimetres over a plausible cotton and nothing more.
+///
+/// ponytail: this is a SCENE-WIDE μ, so it is cloth-on-CLOTH friction too. There is
+/// exactly one coefficient — `ImplicitSolver::stencil_mu` returns `params.friction`
+/// for every self-collision stencil, because `vertex_friction` is never populated —
+/// and the ramp evidence above measures cloth on a *body* only. μ = 1.0 between two
+/// layers of the same skirt is not something anyone measured. Upgrade path: fill
+/// `vertex_friction` per object in `Scene::lower` so a cloth-cloth stencil folds two
+/// fabric μ and a cloth-body stencil folds fabric against collider.
 pub const HIGH_FRICTION_MU: f32 = 1.0;
 
 /// Cloth overhang past the target, as a fraction of the target's largest extent.

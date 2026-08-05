@@ -262,6 +262,15 @@ pub enum DockEvent {
 struct Drag {
     grab: DividerGrab,
     last: f32,
+    /// Motion the [`MIN_PANEL`] clamp refused, kept so the divider stays a
+    /// pure function of where the pointer *is*.
+    ///
+    /// Without it, dragging 200 px past the clamp and coming back leaves the
+    /// divider 200 px away from the cursor for the rest of the gesture —
+    /// `pane_grid` avoids this by mapping the absolute cursor to a ratio
+    /// (`pane_grid.rs:648`), which needs the split's screen origin. Banking
+    /// the remainder gets the same invariant out of the deltas we already have.
+    pending: f32,
 }
 
 /// The dock's authoritative state. Owned by the app, never by a widget.
@@ -297,6 +306,7 @@ impl DockLayout {
             DockEvent::DividerGrabbed(grab) => {
                 self.drag = Some(Drag {
                     last: f32::NAN,
+                    pending: 0.0,
                     grab,
                 });
             }
@@ -318,6 +328,10 @@ impl DockLayout {
 
     /// Feed the current cursor position while a divider is grabbed.
     /// The first call after a grab only establishes the origin.
+    ///
+    /// Motion the clamp refuses is banked (see [`Drag::pending`]), so the
+    /// divider tracks the pointer exactly even after a drag that ran into
+    /// [`MIN_PANEL`] and came back.
     pub fn drag_to(&mut self, cursor: (f32, f32)) {
         let Some(drag) = self.drag.as_mut() else {
             return;
@@ -332,11 +346,29 @@ impl DockLayout {
             return;
         }
 
-        let (delta, grab) = (along - last, drag.grab.clone());
+        let (want, grab) = (along - last + drag.pending, drag.grab.clone());
         let (collapsed_extent, divider) = (self.collapsed_extent, self.divider);
-        if let Some(split) = self.split_at_mut(&grab.path) {
-            split.drag_divider(grab.index, delta, grab.total, collapsed_extent, divider);
-        }
+        let Some(split) = self.split_at_mut(&grab.path) else {
+            return;
+        };
+
+        let measure = |s: &Split| {
+            s.sizes(grab.total, collapsed_extent, divider)
+                .get(grab.index)
+                .copied()
+                .unwrap_or(0.0)
+        };
+        let before = measure(split);
+        split.drag_divider(grab.index, want, grab.total, collapsed_extent, divider);
+        let applied = measure(split) - before;
+
+        // Unwrap: `self.drag` was `Some` at the top and nothing here clears it.
+        let drag = self.drag.as_mut().expect("drag is still live");
+        drag.pending = if want.is_finite() && applied.is_finite() {
+            want - applied
+        } else {
+            0.0
+        };
     }
 
     pub fn split_at_mut(&mut self, path: &[usize]) -> Option<&mut Split> {
@@ -394,7 +426,8 @@ where
 {
     // `responsive` hands us the laid-out size, which is how a grabbed divider
     // can report the exact container extent it is dividing.
-    iced::widget::responsive(move |size| {
+    let release = on_event.clone();
+    let body = iced::widget::responsive(move |size| {
         node_view(
             layout,
             &layout.root,
@@ -405,8 +438,19 @@ where
             &on_event,
             &content,
         )
-    })
-    .into()
+    });
+
+    // A release ANYWHERE in the dock ends the drag. `mouse_area` returns before
+    // its release arm whenever the cursor is outside its own bounds
+    // (`iced_widget-0.14.2/src/mouse_area.rs:369`), and after a fast drag —
+    // or any drag the clamp stopped — the cursor is exactly not on the 6 px
+    // line any more, so the divider's own `on_release` never fires and the
+    // divider keeps following the mouse. Wrapping the whole dock makes the
+    // bounds test true for every release the dock can see. `on_release` does
+    // not capture the event, so nothing below loses it.
+    mouse_area(body)
+        .on_release(release(DockEvent::DividerReleased))
+        .into()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -488,21 +532,31 @@ where
     Message: Clone + 'a,
     F: Fn(DockEvent) -> Message + Clone + 'a,
 {
-    let thickness = Length::Fixed(tokens.metrics.divider);
-    let (w, h) = match grab.axis {
-        Axis::Horizontal => (thickness, Length::Fill),
-        Axis::Vertical => (Length::Fill, thickness),
+    // The strip you can hit is `divider` wide; the line you can see is
+    // `divider_line`, centred in it. `DockLayout::divider` reserves the strip,
+    // so the leeway is in the layout rather than stolen from a neighbour.
+    let strip = Length::Fixed(tokens.metrics.divider);
+    let painted = Length::Fixed(tokens.metrics.divider_line);
+    let (w, h, lw, lh) = match grab.axis {
+        Axis::Horizontal => (strip, Length::Fill, painted, Length::Fill),
+        Axis::Vertical => (Length::Fill, strip, Length::Fill, painted),
     };
     let line = tokens.color.border;
 
     mouse_area(
-        container(space::horizontal())
-            .width(w)
-            .height(h)
-            .style(move |_| container::Style {
-                background: Some(color(line).into()),
-                ..container::Style::default()
-            }),
+        container(
+            container(space::horizontal())
+                .width(lw)
+                .height(lh)
+                .style(move |_| container::Style {
+                    background: Some(color(line).into()),
+                    ..container::Style::default()
+                }),
+        )
+        .width(w)
+        .height(h)
+        .align_x(iced::Center)
+        .align_y(iced::Center),
     )
     .interaction(match grab.axis {
         Axis::Horizontal => mouse::Interaction::ResizingHorizontally,
@@ -909,6 +963,129 @@ mod tests {
             .unwrap()
             .sizes(900.0, COLLAPSED, DIVIDER);
         assert!((after[0] - moved[0]).abs() < EPS);
+    }
+
+    /// The divider is a **pure function of where the pointer is**, not of the
+    /// path it took to get there. Drag hard into the `MIN_PANEL` clamp, come
+    /// back, and the divider must be exactly where it started.
+    ///
+    /// Before the `pending` bank this failed: `drag_to` threw away whatever the
+    /// clamp refused, so the return trip started from the clamped position and
+    /// the divider ended ~236 px right of the cursor.
+    #[test]
+    fn a_drag_past_the_clamp_and_back_returns_the_divider_to_the_cursor() {
+        let mut layout = DockLayout::new(Node::Split(three()), &Tokens::dark());
+        layout.collapsed_extent = COLLAPSED;
+        layout.divider = DIVIDER;
+        let before = layout
+            .split_at_mut(&[])
+            .unwrap()
+            .sizes(900.0, COLLAPSED, DIVIDER);
+
+        layout.update(DockEvent::DividerGrabbed(DividerGrab {
+            path: vec![],
+            index: 0,
+            axis: Axis::Horizontal,
+            total: 900.0,
+        }));
+
+        // Origin, then far past the left clamp, then all the way back.
+        for x in [300.0, 250.0, 100.0, -400.0, -900.0, 100.0, 250.0, 300.0] {
+            layout.drag_to((x, 0.0));
+        }
+
+        let after = layout
+            .split_at_mut(&[])
+            .unwrap()
+            .sizes(900.0, COLLAPSED, DIVIDER);
+        assert!(
+            (after[0] - before[0]).abs() < EPS,
+            "divider did not return: {} -> {}",
+            before[0],
+            after[0]
+        );
+        assert!((after[1] - before[1]).abs() < EPS);
+    }
+
+    /// The same invariant in the other direction, and past the *other* clamp:
+    /// the position after a round trip depends only on the final cursor.
+    #[test]
+    fn the_divider_position_depends_only_on_the_final_cursor() {
+        let route = |detours: &[f32]| {
+            let mut layout = DockLayout::new(Node::Split(three()), &Tokens::dark());
+            layout.collapsed_extent = COLLAPSED;
+            layout.divider = DIVIDER;
+            layout.update(DockEvent::DividerGrabbed(DividerGrab {
+                path: vec![],
+                index: 1,
+                axis: Axis::Horizontal,
+                total: 900.0,
+            }));
+            layout.drag_to((600.0, 0.0)); // origin
+            for x in detours {
+                layout.drag_to((*x, 0.0));
+            }
+            layout.drag_to((560.0, 0.0)); // same destination for every route
+            layout
+                .split_at_mut(&[])
+                .unwrap()
+                .sizes(900.0, COLLAPSED, DIVIDER)
+        };
+
+        let direct = route(&[]);
+        for detour in [
+            vec![5000.0],
+            vec![-5000.0],
+            vec![5000.0, -5000.0],
+            // 100 000 logical px is already far past any display; beyond that
+            // the bank is f32 cancellation, not layout.
+            vec![1e5, -1e5, 700.0],
+        ] {
+            let taken = route(&detour);
+            for (a, b) in direct.iter().zip(&taken) {
+                assert!(
+                    (a - b).abs() < EPS,
+                    "detour {detour:?}: {direct:?} != {taken:?}"
+                );
+            }
+        }
+    }
+
+    /// A released drag must ignore everything after it, including the banked
+    /// remainder of the gesture that ended.
+    #[test]
+    fn a_new_grab_does_not_inherit_the_previous_gestures_remainder() {
+        let mut layout = DockLayout::new(Node::Split(three()), &Tokens::dark());
+        layout.collapsed_extent = COLLAPSED;
+        layout.divider = DIVIDER;
+        let grab = DividerGrab {
+            path: vec![],
+            index: 0,
+            axis: Axis::Horizontal,
+            total: 900.0,
+        };
+
+        layout.update(DockEvent::DividerGrabbed(grab.clone()));
+        layout.drag_to((300.0, 0.0));
+        layout.drag_to((-9000.0, 0.0)); // banks a huge refused remainder
+        layout.update(DockEvent::DividerReleased);
+        let clamped = layout
+            .split_at_mut(&[])
+            .unwrap()
+            .sizes(900.0, COLLAPSED, DIVIDER);
+
+        layout.update(DockEvent::DividerGrabbed(grab));
+        layout.drag_to((100.0, 0.0));
+        layout.drag_to((130.0, 0.0));
+        let after = layout
+            .split_at_mut(&[])
+            .unwrap()
+            .sizes(900.0, COLLAPSED, DIVIDER);
+        assert!(
+            (after[0] - (clamped[0] + 30.0)).abs() < EPS,
+            "second gesture moved {} instead of 30 px",
+            after[0] - clamped[0]
+        );
     }
 
     #[test]

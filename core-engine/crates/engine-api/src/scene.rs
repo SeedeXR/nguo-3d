@@ -179,6 +179,17 @@ impl Scene {
             contact_dhat: material.contact_gap.max(1.0e-3),
             contact_kappa: material.young_mod.max(1.0),
             contact_dynamic: material.contact_dynamic,
+            // Coulomb friction. A static body is an `Object`, not a `ColliderSpec`, so
+            // cloth-body contact runs through the SELF-COLLISION stencil and reads this
+            // field via `ImplicitSolver::stencil_mu` — `collider_friction` and
+            // `friction_mode` never enter that path and are deliberately left at their
+            // defaults (the reference's `default:` is `Min`, and its INFINITY sentinel is
+            // skipped explicitly, so both are inert here). Without this line IPC barriers
+            // are purely repulsive and nothing can hold a garment on a torso.
+            friction: material.friction,
+            // The engine's own default is 1e-3; the scene config declares 1e-5 and was
+            // never read, so the looser value silently won. Inert while `friction` is 0.
+            friction_eps: c.friction_eps,
             self_collision: c.self_collision,
             // Strain limiting: `material.strain_limit` is the max tensile strain
             // fraction (0 disables); the limiter's rest ratio is `1 + that`. Stiffness
@@ -236,6 +247,12 @@ impl Scene {
             // aerodynamic drag until the anisotropic damper is wired here.
             damping: c.damping,
             floor_y: c.floor_y.unwrap_or(f32::NEG_INFINITY),
+            // ponytail: NOT `material.friction`. This is the preview tier's floor
+            // half-space and it is a different quantity — the FRACTION of tangential
+            // slip removed per substep, `clamp(0,1)` (`solver.rs:242`), not a Coulomb
+            // ratio. Feeding μ = 1.0 into it would read as "delete all floor slip",
+            // which is a pun on the name rather than a wiring. Upgrade path: give the
+            // XPBD `collide()` a real Coulomb cone, then map the material through.
             floor_friction: 0.0,
         }
     }
@@ -349,6 +366,23 @@ mod tests {
         assert_eq!(off.params.strain_limit_k, 0.0);
     }
 
+    /// The cheap guard against the `..Default::default()` swallow recurring: eleven
+    /// material fields were mapped by hand and `friction` was simply not among them,
+    /// so it read the engine default 0.0 and `auto_drape`'s `HIGH_FRICTION_MU` did
+    /// nothing. `friction_eps` was worse — declared on `SolverConfig`, never read, so
+    /// the engine's looser 1e-3 won over the config's own 1e-5.
+    #[test]
+    fn build_implicit_wires_friction() {
+        let mut scene = quad_scene();
+        scene.objects[0].material.friction = 0.42;
+        scene.config.friction_eps = 2.0e-5;
+        let solver = scene.build_implicit();
+        assert!((solver.params.friction - 0.42).abs() < 1e-9);
+        assert!((solver.params.friction_eps - 2.0e-5).abs() < 1e-12);
+        // Frictionless is still the default, so no existing scene changes.
+        assert_eq!(quad_scene().build_implicit().params.friction, 0.0);
+    }
+
     #[test]
     fn build_implicit_wires_anisotropic_strain_limit() {
         // Warp 10% + weft 40% → params ratios 1.1 (warp) and 1.4 (weft).
@@ -358,6 +392,125 @@ mod tests {
         let solver = scene.build_implicit();
         assert!((solver.params.strain_limit_ratio - 1.1).abs() < 1e-6);
         assert!((solver.params.strain_limit_ratio_weft - 1.4).abs() < 1e-6);
+    }
+
+    /// Cloth resting on a **15° incline**, run for 0.5 s; returns how far it slid
+    /// down-slope, in millimetres.
+    ///
+    /// The slab is [`crate::avatar::tests::body_box`] — closed and outward-wound, and
+    /// it asserts its own winding, unlike `box_mesh` — with every position rotated
+    /// about Z so the surface tilts while gravity stays `-Y`. tan 15° = 0.268, so a
+    /// Coulomb μ of 0.35 must hold the patch and μ = 0 must let it run.
+    ///
+    /// This exercises the path a garment on a torso actually takes: a static `Object`
+    /// is not a `ColliderSpec`, so cloth-body contact goes through the self-collision
+    /// stencil, whose coefficient is `ImplicitParams::friction` via
+    /// `ImplicitSolver::stencil_mu` — not `collider_friction`, which only ever reaches
+    /// the analytic-collider path.
+    ///
+    /// `young_mod` carries `contact_kappa` and `contact_gap` carries `contact_dhat`
+    /// (see [`Scene::build_implicit`]); they are set to the 1e4 / 1e-2 the avatar
+    /// bench uses rather than poking `solver.params`, so the test goes through the
+    /// same wiring it is guarding.
+    fn incline_slide_mm(mu: f32) -> f32 {
+        let theta = 15.0f32.to_radians();
+        let (s, c) = theta.sin_cos();
+        let rot = |p: [f32; 3]| [p[0] * c - p[1] * s, p[0] * s + p[1] * c, p[2]];
+        // Down-slope unit direction after the rotation: gravity with its normal
+        // component removed, normalised. Derivation: n = (-sin, cos, 0), and
+        // g - (g·n)n = -sin θ·(cos θ, sin θ, 0).
+        let downhill = [-c, -s, 0.0f32];
+
+        let mut slab = crate::avatar::tests::body_box();
+        let bb = crate::auto_drape::Aabb::of(&slab.positions).expect("slab bounds");
+        // A quarter-width patch (margin -0.25 shrinks the footprint) 3 mm above the
+        // slab's top face, so there is 0.25 m of slab left to slide across.
+        let (cloth_pos, cloth_tris, uvs) =
+            crate::auto_drape::cloth_plane(bb, 5, -0.25, bb.max[1] + 0.003);
+        let start: Vec<[f32; 3]> = cloth_pos.iter().map(|p| rot(*p)).collect();
+        for p in &mut slab.positions {
+            *p = rot(*p);
+        }
+
+        let scene = Scene {
+            config: SolverConfig {
+                dt: 1.0 / 60.0,
+                self_collision: true,
+                ..Default::default()
+            },
+            // Static target FIRST: `lower` takes the material from the last dynamic
+            // object, so the cloth has to come second.
+            objects: vec![
+                slab,
+                Object {
+                    name: "cloth".into(),
+                    positions: start.clone(),
+                    tris: cloth_tris,
+                    material: Material {
+                        young_mod: 1.0e4,
+                        contact_gap: 1.0e-2,
+                        friction: mu,
+                        ..Default::default()
+                    },
+                    preset: None,
+                    pins: Vec::new(),
+                    is_static: false,
+                    normals: Vec::new(),
+                    uvs,
+                    skin: None,
+                    animations: Vec::new(),
+                },
+            ],
+            colliders: vec![],
+        };
+
+        let mut solver = scene.build_implicit();
+        let base = solver.state.vertex_count() - start.len();
+        for _ in 0..30 {
+            solver.step(&engine_core::linsolve::CgCpu::new());
+        }
+        let slid = |acc: f32, i: usize| {
+            let d = solver.state.positions[base + i] - Vec3::from(start[i]);
+            acc + d.dot(Vec3::from(downhill))
+        };
+        (0..start.len()).fold(0.0, slid) / start.len() as f32 * 1000.0
+    }
+
+    /// **Friction is the only thing that can hold cloth on a body.** IPC barriers are
+    /// purely repulsive, so with μ = 0 a garment on any non-horizontal surface slides
+    /// off, however good the contact is. Differential, with the frictionless run as
+    /// its own control — a single "it stayed put" number proves nothing, because a
+    /// solve that does nothing at all also stays put. Before `build_implicit` read
+    /// `material.friction` both runs measured 327.5 mm, bit-identical.
+    ///
+    /// The 15 mm bound is taken from a sweep, not from whatever the code happened to
+    /// do (measured `--release`, this machine, 2026-08-05):
+    ///
+    /// ```text
+    ///   μ      0.0    0.10    0.20   0.268   0.30   0.35   0.45   0.60   1.00
+    ///   slid  327.5  151.8    66.1    25.1   15.8   10.1    6.8    5.3    4.5  mm
+    /// ```
+    ///
+    /// Monotone, and it asymptotes at ~4.5 mm rather than 0: that floor is the 3 mm
+    /// placement drop plus membrane relaxation, projected onto the slope, and it is
+    /// not sliding. 15 mm therefore sits between the μ = tan θ point (25.1 mm, where
+    /// theory says holding only just begins) and the wired 0.35 (10.1 mm), so the
+    /// assertion still fails for every coefficient at or below the physical threshold.
+    /// If it starts reading 20 mm, diagnose — do not raise the bound.
+    #[test]
+    fn friction_holds_cloth_on_an_incline_and_zero_does_not() {
+        let free = incline_slide_mm(0.0);
+        let held = incline_slide_mm(0.35);
+        eprintln!("  15° incline, 0.5 s: μ=0 slid {free:.1} mm, μ=0.35 slid {held:.1} mm");
+        assert!(
+            free > 100.0,
+            "frictionless cloth on a 15° slope only slid {free:.1} mm — the control \
+             did not move, so this test proves nothing",
+        );
+        assert!(
+            held < 15.0,
+            "μ = 0.35 (> tan 15° = 0.268) must hold the patch, but it slid {held:.1} mm",
+        );
     }
 
     /// Horizontal cantilever pinned along its first two columns; returns the mean
@@ -492,9 +645,34 @@ mod tests {
             );
             assert!(p.y > -1.0 - 0.02, "penetrated floor: y={}", p.y);
         }
-        // The cloth actually fell and draped (started at y=1.1).
+        // The cloth fell out of the air (started at y = 1.1) and came to rest ON the
+        // sphere (crown y = 1.0), rather than sliding off it.
+        //
+        // **This bound is two-sided now, and that is a strengthening, not a
+        // re-baseline.** It used to read `min_y < 0.9` with the comment "the cloth
+        // actually fell and draped". Measured 2026-08-05 while wiring
+        // `material.friction`: what it was really passing on was the sheet sliding off
+        // the ball entirely and pooling on the floor — μ = 0 ends at min_y −0.9803,
+        // i.e. flat on the plane at y = −1.0, with every vertex at the same height. A
+        // cotton square 0.96 m across on a 1.0 m sphere is a cap, and a cap that slid
+        // off is the one outcome a drape test must not accept.
+        //
+        // With cotton's μ = 0.35 it rests at 0.9953 (centre 1.0171, the barrier
+        // standoff at dhat = 0.02); the corners overhang the silhouette by only
+        // 0.179 m, which at this bending stiffness sags a few mm. Measured across μ:
+        // 0 → −0.9803, then 0.10 / 0.20 / 0.35 all → 0.995, and `friction_eps`
+        // 1e-3 / 1e-4 / 1e-5 move it by 0.2 mm. So the transition is the presence of
+        // friction, not its magnitude, and neither bound is near an edge.
         let min_y = ps.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
-        assert!(min_y < 0.9, "cloth did not drape: min_y={min_y}");
+        assert!(
+            min_y < 1.02,
+            "cloth never came down onto the sphere: min_y={min_y} (started at 1.1)",
+        );
+        assert!(
+            min_y > 0.9,
+            "cloth slid off the sphere to min_y={min_y} — friction is not reaching \
+             the contact (μ = 0 measures −0.98, on the floor)",
+        );
     }
 
     #[test]

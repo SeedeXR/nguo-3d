@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-//! Grid and rulers, *derived from the view transform* — never a fixed bitmap
-//! and never stored geometry (guide §7.2).
+//! The grid, *derived from the view transform* — never a fixed bitmap and never
+//! stored geometry (guide §7.2).
 //!
 //! Everything here is a pure function of [`View`] plus the widget size, so the
 //! grid is correct at any pan, any zoom and any HiDPI scale factor without a
 //! cache to invalidate.
+//!
+//! # No rulers
+//! There used to be two 18 px unlabelled strips here, occluding the top-left of
+//! the drawing area and carrying no information the grid does not: this crate
+//! has no font (there is no parley in the lock file, and the one vendored face
+//! sits behind egui in the debug overlay), so the numbers could never be drawn.
+//! Neither CLO3D nor Marvelous Designer ships rulers either. What replaces them
+//! is the origin cross in [`crate::scene::grid_scene`], the live segment length
+//! on the pen rubber band, and a cursor readout in the status bar.
 
 use vello::kurbo::{Point, Rect, Vec2};
 
@@ -17,9 +26,6 @@ pub const TARGET_MINOR_PX: f64 = 14.0;
 /// Minor lines per major line. Ten, so the major lines land on decade
 /// boundaries of the 1-2-5 step and the labels stay round numbers.
 pub const MINORS_PER_MAJOR: f64 = 10.0;
-
-/// Ruler strip thickness in logical px, both axes.
-pub const RULER_PX: f64 = 18.0;
 
 /// Refuse to emit more ticks than this from one call. A step of the right size
 /// yields a few hundred; anything past this is a caller bug and would otherwise
@@ -72,32 +78,6 @@ pub fn ticks(from: f64, to: f64, step: f64) -> impl Iterator<Item = f64> {
         (0, -1)
     };
     (first..=last).map(move |i| i as f64 * step)
-}
-
-/// Ruler tick labels for one axis: `(screen coordinate, text)`.
-///
-/// ponytail: this crate has no font — `nguo-gpu::overlay` owns the vendored
-/// Space Mono and parley is not wired yet (guide §7.5). Returning the strings
-/// keeps the numbers available to whoever can draw them; swap in
-/// `Scene::draw_glyphs` when a font handle reaches the canvas.
-pub fn labels(view: &View, size: Vec2, horizontal: bool) -> Vec<(f64, String)> {
-    let (_, major) = steps(view.zoom);
-    let world = visible(view, size);
-    let (from, to) = if horizontal {
-        (world.x0, world.x1)
-    } else {
-        (world.y0, world.y1)
-    };
-    ticks(from, to, major)
-        .map(|v| {
-            let screen = if horizontal {
-                view.world_to_screen(Point::new(v, 0.0), size).x
-            } else {
-                view.world_to_screen(Point::new(0.0, v), size).y
-            };
-            (screen, format!("{v:.0}"))
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -167,22 +147,16 @@ mod tests {
     }
 
     #[test]
-    fn labels_are_at_the_screen_position_of_their_world_value() {
-        let size = Vec2::new(640.0, 480.0);
-        let view = View {
-            pan: Vec2::new(37.0, -12.0),
-            zoom: 1.7,
-        };
-        let labels = labels(&view, size, true);
-        assert!(!labels.is_empty(), "a visible ruler has ticks");
-        for (screen, text) in &labels {
-            let world: f64 = text.parse().expect("labels are numeric");
-            let expected = view.world_to_screen(Point::new(world, 0.0), size).x;
-            assert_abs_diff_eq!(*screen, expected, epsilon = 1e-9);
-            assert!(
-                *screen >= -1.0 && *screen <= size.x + 1.0,
-                "label {text} at {screen} is off-widget"
-            );
+    fn the_snap_pitch_is_the_drawn_pitch() {
+        // The defect this pins: a fixed 10 mm snap under a drawn grid that is
+        // 100 mm at the shipped opening zoom, so you snap to lines you cannot
+        // see. `Canvas2d::resolve` drives `Snapper::grid_mm` from here.
+        for zoom in [0.02, 0.13, 1.0, 4.0, 400.0] {
+            let mut canvas = crate::Canvas2d::new();
+            canvas.view.zoom = zoom;
+            let (doc, _, _) = crate::fixture::square_doc();
+            canvas.resolve(&doc, Point::new(1.0, 1.0), Vec2::new(800.0, 600.0));
+            assert_eq!(canvas.snapper.grid_mm, steps(zoom).0, "zoom {zoom}");
         }
     }
 }

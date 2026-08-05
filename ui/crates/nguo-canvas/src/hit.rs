@@ -308,6 +308,31 @@ impl Index {
             .collect()
     }
 
+    /// Vertices sharing an axis with `world` to within `tolerance`, however far
+    /// away in the other axis. The feed for alignment guides — the thing that
+    /// makes a canvas feel like Figma rather than like graph paper.
+    ///
+    /// ponytail: a linear scan of the item list, not a grid query. The grid
+    /// buckets by proximity in *both* axes, and an alignment candidate is by
+    /// definition the opposite of that — arbitrarily far in one of them.
+    /// Measured 2026-08-05 (`tests/perf.rs`, debug profile, 50 pieces × 24 cubic
+    /// edges = 4 850 items): **0.005 ms**, 0.1% of an 8.3 ms frame, against
+    /// 0.674 ms for the index rebuild that precedes it. Sort the vertices into one sorted
+    /// list per axis if a document ever gets big enough to notice.
+    pub fn vertices_aligned(&self, world: Point, tolerance: f64) -> Vec<(Target, Point)> {
+        self.items
+            .iter()
+            .filter_map(|item| match (&item.geom, item.target) {
+                (Geom::Dot(p), t @ Target::Point { .. })
+                    if (p.x - world.x).abs() <= tolerance || (p.y - world.y).abs() <= tolerance =>
+                {
+                    Some((t, *p))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Edge segments near `world`, in world mm. Midpoint and intersection
     /// candidates come from these.
     pub fn segments_near(&self, world: Point, radius: f64) -> Vec<(Target, PathSeg)> {

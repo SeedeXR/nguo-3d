@@ -192,7 +192,7 @@ fn scene_build_stays_inside_the_frame_budget() {
                 let s = grid_scene(&view, SIZE, &tokens);
                 encoded += s.encoding().n_paths as usize;
             });
-            check("  grid + rulers alone", grid, TARGET_MS / 4.0);
+            check("  grid + origin cross alone", grid, TARGET_MS / 4.0);
 
             let overlay = bench(31, || {
                 let s = overlay_scene(&doc, &it, &view, SIZE, &tokens);
@@ -229,6 +229,32 @@ fn hit_testing_and_snapping_are_free_at_pointer_rates() {
         canvas.resolve(&doc, screen, SIZE);
     });
     check("  one snap resolution", snaps, 1.0);
+
+    // The alignment-guide feed is a LINEAR scan of the item list, not a grid
+    // query — the grid buckets by proximity in both axes and an alignment
+    // candidate is by definition far away in one of them. This is the number
+    // the `Index::vertices_aligned` ponytail comment cites as its ceiling.
+    // Probed on a row that really does line up with vertices, so the scan pays
+    // for collecting matches and not just for rejecting everything.
+    let first = doc.pieces().values().next().expect("a piece");
+    let row = first.transform
+        * first
+            .network
+            .vertices
+            .iter()
+            .next()
+            .expect("a vertex")
+            .1
+            .pos;
+    let world = Point::new(row.x + 900.0, row.y);
+    let aligned = bench(201, || {
+        canvas.index(&doc).vertices_aligned(world, 8.0);
+    });
+    check("  one alignment scan", aligned, 1.0);
+    assert!(
+        canvas.index(&doc).vertices_aligned(world, 8.0).len() >= 4,
+        "the profiled alignment scan must actually find candidates"
+    );
 
     note!("  index holds {items} items");
     assert!(

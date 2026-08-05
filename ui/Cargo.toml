@@ -64,6 +64,11 @@ engine-io = { path = "../core-engine/crates/engine-io" }
 
 # --- rendering stack (ALL pinned to wgpu 27, see header) ------------------
 wgpu = "27"
+# wgpu's own shader compiler, used by the WGSL validation tests. Same major as
+# `wgpu` and declared HERE for that reason: pinned inside a crate manifest it can
+# drift from the naga wgpu actually compiles with, and then the test validates
+# against a different compiler than the one that ships (D-11).
+naga = { version = "27", features = ["wgsl-in"] }
 iced = "0.14"
 iced_wgpu = "0.14"
 iced_winit = "0.14"
@@ -106,6 +111,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 clap = { version = "4", features = ["derive"] }
 approx = "0.5"
+# Block-on for the handful of tests that drive wgpu's async API directly.
+pollster = "0.4"
 
 [profile.release]
 lto = "thin"

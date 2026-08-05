@@ -2649,6 +2649,7 @@ name = "nguo-app"
 version = "0.0.1"
 dependencies = [
  "bytemuck",
+ "engine-api",
  "glam 0.30.10",
  "iced",
  "nguo-app-debug",
@@ -2730,6 +2731,9 @@ name = "nguo-cli"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "engine-api",
+ "engine-io",
+ "nguo-avatar",
  "nguo-engine-bridge",
  "serde_json",
  "tempfile",
@@ -2913,7 +2917,10 @@ dependencies = [
  "bytemuck",
  "glam 0.30.10",
  "iced",
+ "naga",
  "nguo-gpu",
+ "nguo-ui-theme",
+ "pollster",
  "tracing",
  "wgpu",
 ]

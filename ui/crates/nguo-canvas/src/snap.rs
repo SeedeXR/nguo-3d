@@ -23,6 +23,12 @@ pub enum SnapKind {
     Intersection,
     Midpoint,
     Symmetry,
+    /// Aligned in x with a vertex elsewhere in the document — the guide line is
+    /// vertical. The axis is in the kind so the overlay knows which way to draw
+    /// it without carrying the source position around.
+    AlignX,
+    /// Aligned in y — a horizontal guide line.
+    AlignY,
     Angle,
     Grid,
 }
@@ -36,6 +42,9 @@ pub struct SnapToggles {
     pub intersection: bool,
     pub angle: bool,
     pub symmetry: bool,
+    /// Covers both [`SnapKind::AlignX`] and [`SnapKind::AlignY`] — one control,
+    /// because nobody wants horizontal guides without vertical ones.
+    pub align: bool,
 }
 
 impl Default for SnapToggles {
@@ -47,6 +56,7 @@ impl Default for SnapToggles {
             intersection: true,
             angle: true,
             symmetry: true,
+            align: true,
         }
     }
 }
@@ -59,6 +69,7 @@ impl SnapToggles {
         intersection: false,
         angle: false,
         symmetry: false,
+        align: false,
     };
 
     pub fn enabled(&self, kind: SnapKind) -> bool {
@@ -69,6 +80,7 @@ impl SnapToggles {
             SnapKind::Intersection => self.intersection,
             SnapKind::Angle => self.angle,
             SnapKind::Symmetry => self.symmetry,
+            SnapKind::AlignX | SnapKind::AlignY => self.align,
         }
     }
 
@@ -80,11 +92,8 @@ impl SnapToggles {
             SnapKind::Intersection => self.intersection = on,
             SnapKind::Angle => self.angle = on,
             SnapKind::Symmetry => self.symmetry = on,
+            SnapKind::AlignX | SnapKind::AlignY => self.align = on,
         }
-    }
-
-    pub fn toggle(&mut self, kind: SnapKind) {
-        self.set(kind, !self.enabled(kind));
     }
 }
 
@@ -142,8 +151,12 @@ impl Snapper {
     /// from the view, and the reason the tolerance is a pixel count.
     pub fn snap(&self, raw: Point, zoom: f64, index: &Index) -> Option<Snap> {
         let tolerance_world = self.tolerance_px / zoom;
-        let mut best: Option<Snap> = None;
-        let mut consider = |kind: SnapKind, world: Point, source: Option<Target>| {
+        // A `Cell` and not a plain local: the alignment block below has to read
+        // whether anything has been accepted yet, and it cannot do that while a
+        // `FnMut` closure holds `best` borrowed. `Snap` is `Copy`, so this costs
+        // nothing.
+        let best: std::cell::Cell<Option<Snap>> = std::cell::Cell::new(None);
+        let consider = |kind: SnapKind, world: Point, source: Option<Target>| {
             if !self.toggles.enabled(kind) {
                 return;
             }
@@ -159,7 +172,7 @@ impl Snapper {
             };
             // Closest wins; equal distance falls back to the `SnapKind` order,
             // so a vertex beats the grid node it happens to sit on.
-            let better = match &best {
+            let better = match &best.get() {
                 None => true,
                 Some(b) => {
                     let d = candidate.screen_distance - b.screen_distance;
@@ -173,7 +186,7 @@ impl Snapper {
                 }
             };
             if better {
-                best = Some(candidate);
+                best.set(Some(candidate));
             }
         };
 
@@ -206,6 +219,21 @@ impl Snapper {
             }
         }
 
+        // Alignment guides: share one axis with a vertex anywhere in the
+        // document, however far away in the other. Only the perpendicular error
+        // is what the tolerance judges, which is what makes a guide catch — and
+        // is also why this is a **fallback** rather than another distance-ranked
+        // candidate. An alignment candidate's distance is *only* that
+        // perpendicular error, so it is nearly always the smallest number in the
+        // set and would otherwise beat the corner you were actually reaching
+        // for. A real entity in range wins; alignment fills the space between.
+        if self.toggles.align && best.get().is_none() {
+            for (target, v) in index.vertices_aligned(raw, tolerance_world) {
+                consider(SnapKind::AlignX, Point::new(v.x, raw.y), Some(target));
+                consider(SnapKind::AlignY, Point::new(raw.x, v.y), Some(target));
+            }
+        }
+
         // --- construction candidates --------------------------------------
         if let (true, Some(from)) = (self.toggles.angle, self.from) {
             if let Some(p) = angle_snap(from, raw) {
@@ -230,7 +258,7 @@ impl Snapper {
             );
         }
 
-        best
+        best.get()
     }
 
     /// Convenience: snap a pointer position given in logical widget px.

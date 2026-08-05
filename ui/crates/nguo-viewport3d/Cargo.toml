@@ -10,6 +10,8 @@ rust-version.workspace = true
 
 [dependencies]
 nguo-gpu = { workspace = true }
+# Colour tokens for the floor. Leaf crate: no transitive weight.
+nguo-ui-theme = { workspace = true }
 iced = { workspace = true }
 wgpu = { workspace = true }
 glam = { workspace = true }
@@ -18,3 +20,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
+# Shader validation only. Already in the graph via wgpu 27, so this adds a
+# direct edge, not a crate: it turns "the viewport is black on someone's
+# machine" into a failing test on a box with no GPU.
+naga = { workspace = true }
+pollster = { workspace = true }

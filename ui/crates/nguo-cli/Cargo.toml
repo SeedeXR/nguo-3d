@@ -19,6 +19,13 @@ path = "src/main.rs"
 
 [dependencies]
 nguo-engine-bridge = { workspace = true }
+# `garment_fit`: the drop-and-fit path. `engine-io` declares the import unit,
+# `engine-api` carries resize/resolve_penetration/Scene, `nguo-avatar` is where
+# the body's measured girths live. No new third-party dependency — all three are
+# already in this tree and `nguo-avatar` already pulls the other two.
+nguo-avatar = { workspace = true }
+engine-api = { workspace = true }
+engine-io = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

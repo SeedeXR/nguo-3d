@@ -139,9 +139,19 @@ pub const RING_MAX_ASPECT: f32 = 1.8;
 /// clips the female avatar's hip height with **5** vertices, whose hull reads a girth of
 /// 0.1185 m against a 1.0873 m hip and so demanded a factor of **9.45** — clamped to
 /// [`RESIZE_LIMIT`] and still enough to lengthen the jacket by 37 cm and drive the deepest
-/// overlap from 53 mm to 107 mm. Every legitimate ring measured in the corpus has ≥ 58
-/// vertices, so 16 separates them with a wide margin either way while still admitting a
-/// genuinely low-poly garment.
+/// overlap from 53 mm to 107 mm.
+///
+/// The margin is wide. Re-measured 2026-08-05 over the whole corpus — five drapeable
+/// garments × both proxies × every manifest landmark — the fewest **distinct** positions in
+/// any *usable* ring is **462** (`men-shirt`/female's hip), so 16 is nowhere near a
+/// legitimate ring while still admitting a genuinely low-poly garment. That sweep also
+/// re-confirms the sliver above at 5 distinct positions and a 0.1185 m hull, and finds **no
+/// corpus ring whose verdict changes** between counting slab entries and counting distinct
+/// positions — the seam-split case is a hazard the gate must be robust to, not something the
+/// corpus happens to exhibit.
+///
+/// It counts [`Ring::verts`], which is **distinct** positions: counting slab entries let a
+/// UV/normal-seam-split copy of the very sliver above clear this gate.
 pub const RING_MIN_VERTS: usize = 16;
 
 /// Factors this close to 1 are reported and not applied. The garment is the right size;
@@ -201,6 +211,12 @@ pub struct Ring {
     pub centre: [f32; 3],
     /// x-extent ÷ z-extent, against [`RING_MAX_ASPECT`].
     pub aspect: f32,
+    /// **Distinct** xz positions in the slab, against [`RING_MIN_VERTS`] — the same point
+    /// set `girth_m` was measured from, not the raw slab entry count. glTF splits vertices
+    /// on UV and normal seams (this repo's own male proxy is 10 230 glTF vertices for 7 498
+    /// unique positions), so counting entries would let a seam-split sliver clear a gate
+    /// that exists to reject it: 5 positions in 4 copies each is the same meaningless hull
+    /// reading 20.
     pub verts: usize,
 }
 
@@ -544,11 +560,13 @@ pub fn ring(mesh: &Object, height_m: f32, slab_m: f32) -> Option<Ring> {
         .collect();
     let bb = Aabb::of(&slab)?;
     let mut xz: Vec<[f32; 2]> = slab.iter().map(|p| [p[0], p[2]]).collect();
-    let verts = xz.len();
     let e = bb.extent();
+    // `hull_perimeter` sorts and dedups in place, so read `verts` AFTER it: the gate must
+    // count the DISTINCT positions the girth was measured from. See `Ring::verts`.
+    let girth_m = hull_perimeter(&mut xz);
     Some(Ring {
         height_m,
-        girth_m: hull_perimeter(&mut xz),
+        girth_m,
         // Report the slab's real mid-height in y, not the requested one, so the anchor
         // lands on geometry that exists.
         centre: bb.center(),
@@ -557,7 +575,7 @@ pub fn ring(mesh: &Object, height_m: f32, slab_m: f32) -> Option<Ring> {
         } else {
             f32::INFINITY
         },
-        verts,
+        verts: xz.len(),
     })
 }
 
@@ -954,28 +972,36 @@ mod tests {
         // hull reads 0.1185 m against a 1.0873 m hip. Round, so the aspect gate lets it
         // through; nonsense, so RING_MIN_VERTS must not. Without this gate the plan asks
         // for 9.45, clamps to 1.5, and lengthens the jacket by 37 cm.
-        let mut sliver = g.clone();
-        for i in 0..5 {
-            let a = std::f32::consts::TAU * i as f32 / 5.0;
-            sliver
-                .positions
-                .push([0.019 * a.cos(), 0.05, 0.019 * a.sin()]);
+        //
+        // `copies` is the seam split: a glTF exporter emits one entry per UV/normal corner,
+        // so the SAME 5 positions can arrive 4× over. The hull, the girth and the nonsense
+        // demand are identical either way, so the gate must count distinct positions — at
+        // `copies = 4` a slab-entry count reads 20, clears RING_MIN_VERTS, and applies a
+        // clamped 1.5 off a 5-point sliver.
+        for copies in [1usize, 4] {
+            let mut sliver = g.clone();
+            for i in 0..5 {
+                let a = std::f32::consts::TAU * i as f32 / 5.0;
+                let p = [0.019 * a.cos(), 0.05, 0.019 * a.sin()];
+                sliver.positions.extend(std::iter::repeat_n(p, copies));
+            }
+            let s = ring(&sliver, 0.05, RING_SLAB_M).expect("the sliver is measured");
+            assert_eq!(s.verts, 5, "copies={copies} counted duplicate positions");
+            assert!(s.aspect < RING_MAX_ASPECT, "sliver aspect {}", s.aspect);
+            let sp = plan_resize(
+                &body_box(),
+                &sliver,
+                &[girth("hip", 1.0873, 0.05)],
+                FIT_EASE,
+            )
+            .unwrap();
+            assert!(
+                sp.is_identity(),
+                "a 5-vertex sliver in {copies} copies set the factor: {sp:?}"
+            );
+            assert_eq!(sp.fits[0].factor, None);
         }
-        let s = ring(&sliver, 0.05, RING_SLAB_M).expect("the sliver is measured");
-        assert_eq!(s.verts, 5);
-        assert!(s.aspect < RING_MAX_ASPECT, "sliver aspect {}", s.aspect);
-        let plan = plan_resize(
-            &body_box(),
-            &sliver,
-            &[girth("hip", 1.0873, 0.05)],
-            FIT_EASE,
-        )
-        .unwrap();
-        assert!(
-            plan.is_identity(),
-            "a 5-vertex sliver set the factor: {plan:?}"
-        );
-        assert_eq!(plan.fits[0].factor, None);
+        // `plan` is still the winged identity plan above: applying an identity changes nothing.
         let mut same = winged.clone();
         let c = apply_resize(&mut same, &plan);
         assert_eq!(same.positions, winged.positions);

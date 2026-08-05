@@ -417,6 +417,31 @@ pub struct ImplicitSolver {
     /// self-collision tests failed exactly that way when this was `all three vertices
     /// pinned`.
     static_collider_vert: Vec<bool>,
+    /// The subset of `collision_tris` all of whose vertices are static collider geometry,
+    /// and the angle-weighted pseudonormal of every scene vertex accumulated over exactly
+    /// those triangles (`ZERO` off the collider).
+    ///
+    /// `collider_tris` is topology and is baked once by
+    /// [`ImplicitSolver::set_static_collider_verts`]. `collider_pn` is geometry and is
+    /// **re-baked every time the collider moves** —
+    /// [`ImplicitSolver::set_kinematic_collider_positions`] does both writes in one call
+    /// precisely so it is structurally impossible to move the body and leave its
+    /// pseudonormals behind. A stale pseudonormal mis-signs the gap, and a mis-signed
+    /// barrier pushes cloth TOWARD the body: measured on the shipped proxies, the wrong
+    /// side was 6.6 % (male) / 10.3 % (female) of proved-outside points and produced
+    /// ~4 000 spurious "inside" stencils per solve.
+    collider_tris: Vec<[u32; 3]>,
+    collider_pn: Vec<Vec3>,
+    /// Displacement each **kinematic collider** vertex underwent since the last `step`,
+    /// written by [`ImplicitSolver::set_kinematic_collider_positions`] and consumed (then
+    /// cleared) by the next `step`. Empty means "the collider did not move", which is the
+    /// static case and costs nothing.
+    ///
+    /// This is the reference's `fdx_override` (`PORTING_contact.md` §8.20, `contact.cu:285`):
+    /// friction is driven by the RELATIVE slip at the contact, and a body vertex that was
+    /// teleported between steps has `x[i] == state.positions[i]` inside the Newton loop, so
+    /// without this a sliding torso reads as a stationary one and exerts no drag at all.
+    kinematic_dx: Vec<Vec3>,
     colliders: Vec<Collider>,
     /// Vertex position constraints (the port of the reference's `FixPair`).
     pins: Vec<Pin>,
@@ -552,6 +577,9 @@ impl ImplicitSolver {
             hinge_plast: Vec::new(),
             collision_tris,
             static_collider_vert: Vec::new(),
+            collider_tris: Vec::new(),
+            collider_pn: Vec::new(),
+            kinematic_dx: Vec::new(),
             colliders: Vec::new(),
             pins: Vec::new(),
             pulls: Vec::new(),
@@ -651,6 +679,7 @@ impl ImplicitSolver {
         let dhat = self.params.contact_dhat;
         let mut stencils: Vec<([usize; 4], f32, [Vec3; 4], f32)> = Vec::new();
         let movable = self.movable_mask();
+        let side = self.collider_sides(x);
         for (v, ti) in crate::broadphase::vertex_triangle_pairs(
             x,
             &self.collision_tris,
@@ -668,7 +697,13 @@ impl ImplicitSolver {
             // resting on a fully PINNED sheet — keep the unsigned distance: a sheet has no
             // consistent outside, and CCD is what stops them crossing.
             let (d, g) = if self.is_collider_tri(&idx) {
-                contact::signed_point_tri_distance_grad(x[idx[0]], x[idx[1]], x[idx[2]], x[idx[3]])
+                contact::signed_point_tri_distance_grad(
+                    x[idx[0]],
+                    x[idx[1]],
+                    x[idx[2]],
+                    x[idx[3]],
+                    side[idx[0]] < 0.0,
+                )
             } else {
                 contact::point_tri_distance_grad(x[idx[0]], x[idx[1]], x[idx[2]], x[idx[3]])
             };
@@ -1222,6 +1257,8 @@ impl ImplicitSolver {
     /// and so does geometry that fails the outward-winding check below, loudly.
     pub fn set_static_collider_verts(&mut self, mask: &[bool]) {
         self.static_collider_vert = Vec::new();
+        self.collider_tris = Vec::new();
+        self.collider_pn = Vec::new();
         if mask.len() != self.state.vertex_count() {
             return;
         }
@@ -1277,6 +1314,87 @@ impl ImplicitSolver {
             return;
         }
         self.static_collider_vert = mask.to_vec();
+        self.collider_tris = marked
+            .iter()
+            .map(|i| [i[0] as u32, i[1] as u32, i[2] as u32])
+            .collect();
+        self.collider_pn = contact::pseudonormals(&self.state.positions, &self.collider_tris);
+    }
+
+    /// Move the static mesh collider: a **kinematic body**, driven by the caller (an
+    /// animation clip through `engine_api::pose::pose_at`, a rigid transform, an IK
+    /// solve — the solver does not care) rather than integrated.
+    ///
+    /// Call it BETWEEN steps, once per step. `x` is parallel to the whole scene's
+    /// vertices; only the rows marked by [`set_static_collider_verts`] are read, so the
+    /// simplest correct caller passes the current positions with the body rows replaced.
+    /// Returns `false` and changes nothing on a length mismatch, with no static
+    /// collider declared, or with a non-finite position on a collider row — the same
+    /// way [`set_pins`] rejects a bad length or a NaN `ghat`.
+    ///
+    /// Three writes:
+    /// * **positions.** A body vertex is Dirichlet (`inv_mass == 0`), so `step` never
+    ///   integrates it and `x_tilde` holds it where it is put — moving it means writing
+    ///   it. `velocities` goes with it so a consumer between calls sees the collider's
+    ///   own velocity; `step` re-zeroes it, and nothing inside the step reads it, so the
+    ///   solver learns about the motion through `kinematic_dx` and not from here.
+    ///   (`prev_positions` is deliberately NOT written: `step` overwrites it with the
+    ///   pre-step position on the very next line of the caller's loop.)
+    /// * **`collider_pn`.** Re-baked here, in the same call, because a pseudonormal is a
+    ///   function of the collider's CURRENT geometry. Doing this as a second method the
+    ///   caller could forget is how you get the mis-signed gap back. Measured: 0.66 ms
+    ///   for the shipped 15 000-triangle proxy, which is 1.2 % of the 53 ms/step a moving
+    ///   collider costs over a static one — the re-bake is not the expensive part.
+    /// * **`kinematic_dx`.** The friction slip override — see the field's doc.
+    ///
+    /// # The ceiling, measured
+    ///
+    /// ponytail: per-step teleportation, no swept collider CCD. `ccd_max_step` sees the
+    /// body's `dx` as zero because the move already happened, so the only guarantee is
+    /// that motion below the barrier's reach is resolved. That threshold is not
+    /// theoretical — measured on the shipped male proxy with a waist band, `dhat` = 5 mm,
+    /// playing `m_Catwalk_Walk_Forward_02` at three speeds:
+    ///
+    /// | body motion | band ends up |
+    /// |---|---|
+    /// | 4.45 mm/step | on the waist (mean y 0.9639 against 0.9883 with the body still) |
+    /// | 22.3 mm/step | slid 0.30 m down the legs |
+    /// | 94.6 mm/step | launched — mean y −4.15 m, 2.32 m from the body |
+    ///
+    /// So idle (1.67 mm/step) is correct and a walk (97.4 mm/step) is not. Playing a walk
+    /// slowly enough to fit costs ~20x the steps, i.e. ~7.5 minutes of compute per
+    /// animated second at the measured 0.375 s/step. Upgrade path: swept collider CCD —
+    /// give `ccd_max_step` the body's end-of-step target instead of teleporting first.
+    pub fn set_kinematic_collider_positions(&mut self, x: &[Vec3]) -> bool {
+        if self.static_collider_vert.is_empty() || x.len() != self.state.vertex_count() {
+            return false;
+        }
+        // Reject before writing anything. A body row is Dirichlet, so `step` never
+        // integrates it back to something finite, and `step`'s own non-finite guard
+        // restores `x0` — which is cloned AFTER the teleport and would already hold
+        // the NaN. One bad frame out of a malformed clip would corrupt the collider
+        // permanently. Only the rows this call writes are checked; the rest are not
+        // its business.
+        if (0..x.len()).any(|i| self.static_collider_vert[i] && !x[i].is_finite()) {
+            return false;
+        }
+        if self.kinematic_dx.is_empty() {
+            self.kinematic_dx = vec![Vec3::ZERO; x.len()];
+        }
+        let inv_h = 1.0 / self.params.dt;
+        for i in 0..x.len() {
+            if !self.static_collider_vert[i] {
+                continue;
+            }
+            let d = x[i] - self.state.positions[i];
+            // Accumulate: two calls between steps describe one combined move, and the
+            // friction override must see the total. Cleared by `step`.
+            self.kinematic_dx[i] += d;
+            self.state.positions[i] = x[i];
+            self.state.velocities[i] = d * inv_h;
+        }
+        self.collider_pn = contact::pseudonormals(&self.state.positions, &self.collider_tris);
+        true
     }
 
     /// Is every vertex of this stencil's triangle static collider geometry?
@@ -1286,6 +1404,75 @@ impl ImplicitSolver {
             && self.static_collider_vert[idx[1]]
             && self.static_collider_vert[idx[2]]
             && self.static_collider_vert[idx[3]]
+    }
+
+    /// Which side of the static collider each vertex is on: `-1.0` inside, `+1.0` outside
+    /// or undecidable. Empty when there is no static collider, which is the signal to leave
+    /// every contact unsigned.
+    ///
+    /// **Once per vertex, from the collider's closest point — not once per stencil.** A
+    /// vertex-triangle stencil is offered for *every* facet within `dhat`, and a facet
+    /// cannot tell whether the point is inside the solid: only the closest point can, which
+    /// is what Bærentzen & Aanæs's pseudonormal criterion is a statement about. Deciding it
+    /// per facet from that facet's own normal told a point 0.1 mm clear of a cube's top
+    /// face that it was 0.9 mm inside — because it sat behind the neighbouring `z = 1`
+    /// facet's plane across their shared convex edge — and pushed it in. Measured on the
+    /// shipped male COL proxy over 1 023 points proved outside by ray-cast parity: 68
+    /// mis-signed (6.6 %) by the face normal, 46 (4.5 %) by the per-facet pseudonormal, and
+    /// **0** this way. The female proxy went 108 (10.3 %) / 102 (9.7 %) / **0**.
+    ///
+    /// A vertex whose nearest collider facet is further than `dhat` is reported OUTSIDE
+    /// whatever the geometry says. The broadphase only offers candidates near a facet, so a
+    /// vertex deeper inside than `dhat` gets no collider stencil to sign anyway; what the
+    /// clamp actually prevents is a *far* candidate — the broadphase grid is conservative
+    /// and its cells are coarse on a low-triangle collider — being handed a negative gap
+    /// and so surviving the `d >= dhat` activation filter. That is not hypothetical: on the
+    /// unit-cube witness the old per-facet sign produced an ACTIVE stencil at −353.6 mm.
+    fn collider_sides(&self, x: &[Vec3]) -> Vec<f32> {
+        if self.collider_tris.is_empty() {
+            return Vec::new();
+        }
+        let dhat = self.params.contact_dhat;
+        let mut best = vec![f32::INFINITY; x.len()];
+        let mut side = vec![1.0f32; x.len()];
+        let movable = self.movable_mask();
+        // `exclusion` lists the vertices adjacent to each vertex, so it drops a triangle
+        // only when it shares a corner — never true for cloth against the body, and the
+        // body against itself is dropped outright below.
+        crate::broadphase::for_each_vertex_triangle_pair(
+            x,
+            &self.collider_tris,
+            dhat,
+            &self.exclusion,
+            &movable,
+            |v, ti| {
+                let v = v as usize;
+                if self.static_collider_vert[v] {
+                    return; // the body against itself has no meaning here
+                }
+                let t = self.collider_tris[ti as usize];
+                let (a, b, c) = (x[t[0] as usize], x[t[1] as usize], x[t[2] as usize]);
+                let (q, l) = contact::closest_point_on_triangle_bary(x[v], a, b, c);
+                let e = x[v] - q;
+                let d2 = e.length_squared();
+                if d2 >= best[v] {
+                    return;
+                }
+                best[v] = d2;
+                let n = contact::surface_normal_at(
+                    l,
+                    (b - a).cross(c - a).normalize_or_zero(),
+                    t.map(|i| self.collider_pn[i as usize]),
+                );
+                side[v] = if e.dot(n) < 0.0 { -1.0 } else { 1.0 };
+            },
+        );
+        for (s, d2) in side.iter_mut().zip(&best) {
+            if *d2 >= dhat * dhat {
+                *s = 1.0;
+            }
+        }
+        side
     }
 
     /// The built tet elements (rest state baked in).
@@ -1667,8 +1854,9 @@ impl ImplicitSolver {
             // buckets of ~25 on `domino`) instead of the degenerate one (cell 2.0, one bucket
             // of 1344). Widening x4 reaches `max_disp` in at most a few passes.
             let mut allowed = (0.5 * self.char_len).min(max_disp).max(1.0e-9);
-            // Hoisted out of the widening loop — the mask does not depend on `allowed`.
+            // Hoisted out of the widening loop — neither depends on `allowed`.
             let movable = self.movable_mask();
+            let side = self.collider_sides(x);
             loop {
                 let full = allowed >= max_disp;
                 let search = fixed + 2.0 * allowed;
@@ -1696,12 +1884,7 @@ impl ImplicitSolver {
                         // resolves }`). ACCD works on the UNSIGNED distance, so it reads the
                         // vertex's journey back out through the surface as an impact and would
                         // brake it against the surface it is trying to leave.
-                        if self.is_collider_tri(&idx)
-                            && contact::signed_point_tri_distance_grad(
-                                x[idx[0]], x[idx[1]], x[idx[2]], x[idx[3]],
-                            )
-                            .0 < 0.0
-                        {
+                        if self.is_collider_tri(&idx) && side[idx[0]] < 0.0 {
                             return;
                         }
                         let x0 = [x[idx[0]], x[idx[1]], x[idx[2]], x[idx[3]]];
@@ -1879,6 +2062,12 @@ impl ImplicitSolver {
             }
         }
         self.state.time += h as f64;
+        // The kinematic collider's displacement described THIS step. Clearing it here
+        // rather than in the setter means a step the caller did not re-pose sees a
+        // stationary body, which is the truth, instead of re-applying the last move.
+        for d in self.kinematic_dx.iter_mut() {
+            *d = Vec3::ZERO;
+        }
 
         // Record diagnostic channels + invariant inputs for this step.
         let all_finite = self.state.positions.iter().all(|p| p.is_finite());
@@ -2847,8 +3036,18 @@ impl ImplicitSolver {
                     // gradient/Hessian are embedded with the proximity weights).
                     let mu_s = self.stencil_mu(&idx);
                     if mu_s > 0.0 {
-                        let dxs: [Vec3; 4] =
-                            std::array::from_fn(|a| x[idx[a]] - self.state.positions[idx[a]]);
+                        // The reference's `fdx_override` (`contact.cu:285`,
+                        // `PORTING_contact.md` §8.20): friction is driven by the RELATIVE
+                        // slip, `slip = Σ_a w_a·dx_a` with the barycentric weights, so a
+                        // kinematic body vertex has to contribute the displacement it was
+                        // teleported by. Inside the Newton loop `x == state.positions` for
+                        // it, so without the term a sliding torso exerts no drag and cloth
+                        // that rides along with it reads as slipping at full speed.
+                        let dxs: [Vec3; 4] = std::array::from_fn(|a| {
+                            let i = idx[a];
+                            let body = self.kinematic_dx.get(i).copied().unwrap_or(Vec3::ZERO);
+                            x[i] - self.state.positions[i] + body
+                        });
                         let (fg, fh) =
                             contact::stencil_friction(&g, &dxs, bg, mu_s, self.params.friction_eps);
                         for a in 0..4 {
@@ -7369,6 +7568,157 @@ mod static_mesh_collider_tests {
         );
     }
 
+    /// Closed axis-aligned unit cube, 12 triangles, wound outward (asserted, not assumed).
+    fn cube_mesh() -> (Vec<Vec3>, Vec<[u32; 3]>) {
+        let pos: Vec<Vec3> = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(1.0, 1.0, 1.0),
+            Vec3::new(0.0, 1.0, 1.0),
+        ];
+        let mut tris: Vec<[u32; 3]> = vec![
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [3, 6, 2],
+            [3, 7, 6],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+        ];
+        let ctr = Vec3::splat(0.5);
+        for t in tris.iter_mut() {
+            let (a, b, c) = (pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]);
+            if (b - a).cross(c - a).dot((a + b + c) / 3.0 - ctr) < 0.0 {
+                t.swap(1, 2);
+            }
+        }
+        for (i, t) in tris.iter().enumerate() {
+            let (a, b, c) = (pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]);
+            assert!(
+                (b - a).cross(c - a).dot((a + b + c) / 3.0 - ctr) > 0.0,
+                "cube triangle {i} is wound inward"
+            );
+        }
+        (pos, tris)
+    }
+
+    /// **A point OUTSIDE a closed collider must not be told it is inside by any of the
+    /// triangles that reach it.**
+    ///
+    /// Every triangle within `dhat` contributes a barrier term, not only the closest one.
+    /// Taking the side from a single triangle's own face normal therefore mis-signs a point
+    /// that sits behind a *neighbouring* facet's plane across a shared convex edge — the
+    /// point is outside the solid but on the back side of that one plane.
+    ///
+    /// The witness: a unit cube and a vertex at `(0.5, 1.0001, 0.9991)`, 0.1 mm clear of the
+    /// top face and 0.9 mm short of the top/front edge. Its true gap is +0.1 mm. The `z = 1`
+    /// facet's closest feature is that shared edge, and by that facet's own +Z normal the
+    /// vertex reads **−0.9055 mm** — an active barrier whose force has a −Y component,
+    /// pushing the vertex through a surface it clears by 0.1 mm. Measured
+    /// `|dE/dg|` ratio against the correct +0.1 mm stencil: **1.5×**.
+    ///
+    /// The per-triangle **pseudonormal** does not fix this and was measured not to: the
+    /// interpolated normal along that convex edge is `(0,1,1)/√2`, and the same vertex still
+    /// reads −0.9055 mm. Only a side taken from the **mesh-wide** closest point is right
+    /// here (Bærentzen & Aanæs applies to the closest point of the surface, not of an
+    /// arbitrary facet). Over 1 023 points proved outside the shipped male COL proxy by
+    /// ray-cast parity: face normal 68 mis-signed (6.6 %), per-triangle pseudonormal 46
+    /// (4.5 %), mesh-wide pseudonormal **0**.
+    ///
+    /// The fourth vertex, 2 mm **inside** the same face, is the other half of the claim and
+    /// is what stops "call everything outside" passing: it must still get a negative gap, or
+    /// a garment authored inside the body never recovers. It is also what makes the test
+    /// discriminating about *closest* — a mutant that takes the side from the last facet the
+    /// broadphase offers rather than the nearest lands on a facet beyond `dhat`, gets clamped
+    /// to "outside", and fails here.
+    #[test]
+    fn a_vertex_outside_a_closed_collider_gets_no_negative_gap_from_any_facet() {
+        let (cube_pos, cube_tris) = cube_mesh();
+        // Vertices 0-2 have y > 1 and so are OUTSIDE the cube by construction — no ray
+        // casting needed to know it. Vertex 3 is 2 mm below the top face, inside on every
+        // axis, and so is INSIDE by construction.
+        let cloth_pos = vec![
+            Vec3::new(0.5, 1.0001, 0.9991),
+            Vec3::new(0.52, 1.0002, 0.9991),
+            Vec3::new(0.5, 1.0002, 0.9971),
+            Vec3::new(0.5, 0.998, 0.9991),
+        ];
+        let inside_v = 3usize;
+        let ncloth = cloth_pos.len();
+        let mut pos = cloth_pos.clone();
+        pos.extend_from_slice(&cube_pos);
+        let mut tris: Vec<[u32; 3]> = vec![[0, 1, 2], [0, 2, 3]];
+        tris.extend(cube_tris.iter().map(|t| t.map(|i| i + ncloth as u32)));
+
+        let mut state = SimState::from_mesh(&Mesh::new(pos.clone(), tris), 0.02);
+        for i in ncloth..state.vertex_count() {
+            state.pin(i);
+        }
+        let n = state.vertex_count();
+        let mut solver = ImplicitSolver::new(
+            state,
+            ImplicitParams {
+                contact_dhat: 0.005,
+                self_collision: true,
+                ..params(true)
+            },
+        );
+        let mut collider = vec![false; n];
+        collider[ncloth..].fill(true);
+        solver.set_static_collider_verts(&collider);
+
+        let x = solver.state.positions.clone();
+        let stencils = solver.self_collision_stencils(&x);
+        let body: Vec<_> = stencils
+            .iter()
+            .filter(|(idx, ..)| idx[0] < ncloth && solver.is_collider_tri(idx))
+            .collect();
+        assert!(
+            body.iter().filter(|(idx, ..)| idx[0] != inside_v).count() >= 2,
+            "the outside vertices got no cloth-vs-cube stencil — the test is not \
+             discriminating"
+        );
+        let mut inside_seen = 0;
+        for (idx, gap, ..) in &body {
+            if idx[0] == inside_v {
+                inside_seen += 1;
+                assert!(
+                    *gap < 0.0,
+                    "vertex {} at {:?} is 2 mm INSIDE the cube yet facet {:?} reports a gap \
+                     of {:+.4} mm — a garment authored inside the body would never recover",
+                    idx[0],
+                    x[idx[0]],
+                    &idx[1..],
+                    gap * 1000.0
+                );
+            } else {
+                assert!(
+                    *gap >= 0.0,
+                    "vertex {} at {:?} is OUTSIDE the cube (y > 1) yet facet {:?} reports a \
+                     gap of {:+.4} mm",
+                    idx[0],
+                    x[idx[0]],
+                    &idx[1..],
+                    gap * 1000.0
+                );
+            }
+        }
+        assert!(
+            inside_seen > 0,
+            "the inside vertex got no cloth-vs-cube stencil — the recovery half of the \
+             test is vacuous"
+        );
+    }
+
     fn plane_matches_analytic_half_space_from(start: f32) {
         let patch = cloth(5, start, 0.2);
         let mesh = drop_on_mesh(&patch, &floor_mesh(9, 0.0, 0.6));
@@ -7605,5 +7955,217 @@ mod static_mesh_collider_tests {
                 "vertex {i}: same input must give identical positions"
             );
         }
+    }
+
+    /// Settle a patch on a sphere, then TRANSLATE the sphere `+x` by `dx` per step for
+    /// `slide_steps` steps via [`ImplicitSolver::set_kinematic_collider_positions`].
+    /// Returns `(cloth centroid x travel, total body travel, max cloth penetration depth)`.
+    ///
+    /// The penetration depth is measured against the sphere's ANALYTIC radius at its
+    /// current centre — an oracle independent of the mesh collider under test, which is
+    /// the point: a signed-gap bug that agreed with itself would still fail here.
+    fn drag_on_moving_sphere(mu: f32, dx: f32, slide_steps: usize) -> (f32, f32, f32) {
+        const R: f32 = 0.2;
+        let body = sphere_mesh(Vec3::ZERO, R, 20, 10);
+        let patch = cloth(5, 0.45, 0.06);
+        let ncloth = patch.0.len();
+
+        let mut pos = patch.0.clone();
+        let mut tris = patch.1.clone();
+        pos.extend_from_slice(&body.0);
+        tris.extend(body.1.iter().map(|t| {
+            [
+                t[0] + ncloth as u32,
+                t[1] + ncloth as u32,
+                t[2] + ncloth as u32,
+            ]
+        }));
+        let mut state = SimState::from_mesh(&Mesh::new(pos, tris), 0.02);
+        for i in ncloth..state.vertex_count() {
+            state.pin(i);
+        }
+        let nverts = state.vertex_count();
+        let p = ImplicitParams {
+            friction: mu,
+            friction_eps: 1.0e-4,
+            ..params(true)
+        };
+        let mut solver = ImplicitSolver::new(state, p);
+        let mut collider = vec![false; nverts];
+        collider[ncloth..].fill(true);
+        solver.set_static_collider_verts(&collider);
+
+        // Settle first, so the slide starts from a genuine resting contact rather than
+        // from cloth still in free fall (which would slide for reasons of its own).
+        for _ in 0..300 {
+            solver.step(&CgCpu::new());
+        }
+        let cx = |s: &ImplicitSolver| {
+            s.state.positions[..ncloth].iter().map(|q| q.x).sum::<f32>() / ncloth as f32
+        };
+        let x0 = cx(&solver);
+
+        let mut centre = Vec3::ZERO;
+        let mut worst_pen = 0.0f32;
+        for _ in 0..slide_steps {
+            centre.x += dx;
+            let mut target = solver.state.positions.clone();
+            for (i, t) in target.iter_mut().enumerate().skip(ncloth) {
+                t.x = body.0[i - ncloth].x + centre.x;
+            }
+            assert!(
+                solver.set_kinematic_collider_positions(&target),
+                "the collider move was rejected"
+            );
+            solver.step(&CgCpu::new());
+            for q in &solver.state.positions[..ncloth] {
+                worst_pen = worst_pen.max(R - (*q - centre).length());
+            }
+        }
+        (cx(&solver) - x0, centre.x, worst_pen)
+    }
+
+    /// **The velocity path.** A body that slides under a resting garment must DRAG it, and
+    /// the only thing that can transmit that drag is friction against the body's own
+    /// within-step displacement — the reference's `fdx_override`. Inside the Newton loop a
+    /// teleported body vertex has `x == positions`, so without
+    /// `ImplicitSolver::kinematic_dx` the slip term reads the body as stationary and the
+    /// cloth simply stays where it was.
+    ///
+    /// The μ = 0 run in the same test is the control: same geometry, same motion, no
+    /// friction, so any drag it shows is the collider pushing rather than pulling. The
+    /// assertion is the RATIO between them, which is what discriminates.
+    #[test]
+    fn a_sliding_kinematic_collider_drags_the_cloth_it_carries() {
+        let (dragged, travel, pen) = drag_on_moving_sphere(0.35, 0.002, 100);
+        let (free, _, pen0) = drag_on_moving_sphere(0.0, 0.002, 100);
+        assert!(
+            dragged > 0.5 * travel,
+            "friction did not carry the cloth: it moved {dragged} m while the body \
+             moved {travel} m"
+        );
+        assert!(
+            free < 0.5 * dragged,
+            "the frictionless control moved {free} m against the frictional {dragged} m — \
+             this test is not measuring friction"
+        );
+        // Per-step motion is 2 mm against dhat = 20 mm, so the barrier resolves it and
+        // nothing tunnels. Allow the proxy's own faceting sagitta.
+        let sag = 0.2 * (1.0 - (std::f32::consts::PI / 20.0).cos());
+        assert!(
+            pen < sag + 1.0e-3 && pen0 < sag + 1.0e-3,
+            "cloth entered the moving body: {pen} m (μ=0.35) / {pen0} m (μ=0), \
+             sagitta {sag} m"
+        );
+    }
+
+    /// **The re-bake.** `collider_pn` is a function of the collider's geometry, so a body
+    /// that ROTATES and keeps its bind-pose pseudonormals is signing contact by a normal
+    /// that points somewhere else entirely — and a mis-signed barrier pushes cloth TOWARD
+    /// the body rather than away from it.
+    ///
+    /// The probe is the shape of the existing sign check: points proved OUTSIDE by
+    /// construction (outside the rotated cube's own half-spaces, which needs no ray cast
+    /// and no pseudonormal) must all come back `+1`, and a point proved INSIDE must come
+    /// back `−1`. A pure translation cannot catch this — pseudonormals are
+    /// translation-invariant — so the collider is rotated 90° about z, which is exactly
+    /// what a limb does over the course of a clip.
+    #[test]
+    fn a_rotated_kinematic_collider_signs_contact_by_its_new_pseudonormals() {
+        let (cube, cube_tris) = cube_mesh();
+        // 180° about z through the cube's own centre. The cube maps onto itself as a SET
+        // while every vertex moves, which is what makes the probe positions below
+        // unambiguous — and 180° is what it takes to flip a sign: the criterion asks only
+        // for `e·n > 0`, so a stale normal has a 90° margin before it changes any verdict.
+        // A 50° error is genuinely wrong and genuinely undetectable by this observable,
+        // which is worth knowing rather than papering over.
+        let rot = |p: Vec3| {
+            let c = Vec3::splat(0.5);
+            let q = p - c;
+            Vec3::new(-q.x, -q.y, q.z) + c
+        };
+        // Probes 4.2 mm outside three vertical EDGES, plus one 3 mm inside a face.
+        // Edges on purpose: a face-interior closest point is signed by that face's own
+        // normal, recomputed from the current positions either way, so it cannot tell a
+        // stale pseudonormal from a fresh one. Bærentzen & Aanæs's criterion is a
+        // statement about exactly the non-interior case, and so is the bug. Every probe
+        // is well within the 20 mm `contact_dhat`.
+        let probes = [
+            Vec3::new(1.003, 1.003, 0.5),
+            Vec3::new(-0.003, -0.003, 0.5),
+            Vec3::new(1.003, -0.003, 0.5),
+            Vec3::new(0.5, 0.997, 0.5), // the one genuinely inside
+        ];
+        let nprobe = probes.len();
+        let mut pos = probes.to_vec();
+        pos.extend(cube.iter().map(|p| rot(*p)));
+        // One degenerate cloth triangle so the probes are real mesh vertices; the contact
+        // pass only ever offers them against the cube's facets.
+        let mut tris: Vec<[u32; 3]> = vec![[0, 1, 2], [0, 2, 3]];
+        tris.extend(cube_tris.iter().map(|t| t.map(|i| i + nprobe as u32)));
+
+        let mut state = SimState::from_mesh(&Mesh::new(pos, tris), 0.02);
+        for i in nprobe..state.vertex_count() {
+            state.pin(i);
+        }
+        let n = state.vertex_count();
+        let mut solver = ImplicitSolver::new(state, params(true));
+        let mut mask = vec![false; n];
+        mask[nprobe..].fill(true);
+        solver.set_static_collider_verts(&mask);
+
+        // Rotate it back to the axis-aligned cube. The bind-pose pseudonormals (baked from
+        // the ROTATED cube above) are 90° off for every side face after this move.
+        let mut target = solver.state.positions.clone();
+        target[nprobe..].copy_from_slice(&cube);
+        assert!(solver.set_kinematic_collider_positions(&target));
+
+        let side = solver.collider_sides(&solver.state.positions);
+        assert!(!side.is_empty(), "no static collider — nothing was signed");
+        for (i, p) in probes.iter().enumerate().take(nprobe - 1) {
+            assert_eq!(
+                side[i], 1.0,
+                "probe {i} at {p:?} is outside the axis-aligned unit cube by construction, \
+                 but the collider signed it INSIDE — stale pseudonormals"
+            );
+        }
+        assert_eq!(
+            side[nprobe - 1],
+            -1.0,
+            "the probe 3 mm inside the top face was signed OUTSIDE — the sign is inert, \
+             so the outside assertions above prove nothing"
+        );
+    }
+
+    /// The kinematic setter is all-or-nothing, the way `set_pins` is: a wrong-length
+    /// array, a scene with no static collider declared, or a non-finite position on a
+    /// collider row changes nothing at all.
+    #[test]
+    fn a_rejected_kinematic_move_changes_nothing() {
+        let body = sphere_mesh(Vec3::ZERO, 0.2, 8, 4);
+        let state = SimState::from_mesh(&Mesh::new(body.0.clone(), body.1.clone()), 0.02);
+        let n = state.vertex_count();
+        let mut solver = ImplicitSolver::new(state, params(false));
+        // No static collider declared yet.
+        assert!(!solver.set_kinematic_collider_positions(&vec![Vec3::X; n]));
+        solver.set_static_collider_verts(&vec![true; n]);
+        // Wrong length.
+        assert!(!solver.set_kinematic_collider_positions(&vec![Vec3::X; n - 1]));
+        assert_eq!(solver.state.positions, body.0);
+        // A non-finite position on a collider row. Unrecoverable if it lands, because
+        // a Dirichlet row is never integrated back and `step`'s guard restores an `x0`
+        // cloned after the teleport — so it must be rejected here.
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut nan = vec![Vec3::X; n];
+            nan[n / 2].y = bad;
+            assert!(
+                !solver.set_kinematic_collider_positions(&nan),
+                "{bad} was accepted onto a collider row"
+            );
+            assert_eq!(solver.state.positions, body.0);
+        }
+        // ...and the accepted one does move it.
+        assert!(solver.set_kinematic_collider_positions(&vec![Vec3::X; n]));
+        assert!(solver.state.positions.iter().all(|p| *p == Vec3::X));
     }
 }

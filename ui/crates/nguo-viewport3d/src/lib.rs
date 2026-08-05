@@ -3,6 +3,7 @@
 //! widget on the shared device.
 
 pub mod camera;
+pub mod grid;
 mod renderer;
 
 use std::sync::Arc;
@@ -14,7 +15,8 @@ use iced::{mouse, Rectangle};
 use nguo_gpu::scale::{self, PhysicalRect};
 
 pub use camera::Camera;
-pub use renderer::{AvatarRenderer, ClothRenderer, DEPTH_FORMAT};
+pub use grid::Floor;
+pub use renderer::{AvatarRenderer, ClothRenderer, GridRenderer, DEPTH_FORMAT};
 
 /// One mesh vertex, in the bundle's own space: metres, +Y up, +Z forward,
 /// right-handed. No axis conversion — that is glTF's convention and ours.
@@ -225,6 +227,7 @@ pub struct ClothPrimitive {
 
 #[derive(Debug)]
 pub struct ClothPipeline {
+    grid: GridRenderer,
     renderer: ClothRenderer,
     avatar: AvatarRenderer,
     /// A second instance of the same pass, with its own geometry and its own
@@ -243,6 +246,7 @@ impl shader::Pipeline for ClothPipeline {
         nguo_gpu::adopt(device, queue, format, "viewport3d");
 
         Self {
+            grid: GridRenderer::new(device, format),
             renderer: ClothRenderer::new(device, format),
             avatar: AvatarRenderer::new(device, format),
             garment: AvatarRenderer::new(device, format),
@@ -280,6 +284,22 @@ impl Primitive for ClothPrimitive {
             1.0
         };
         let view_projection = self.camera.view_projection(aspect);
+
+        // The floor's cell size is a function of the widget's LOGICAL height:
+        // a grid line aims for a spacing in logical px, so a Retina display
+        // must not halve the cell.
+        //
+        // ponytail: `Tokens::dark()` rather than the app's live theme. Every
+        // colour is a uniform, so wiring the real one is a field on `Viewport`
+        // and one line in `main.rs` — and `main.rs` belongs to another stream
+        // this session. Light mode draws the dark floor until then.
+        pipeline.grid.upload(
+            queue,
+            view_projection,
+            &self.camera,
+            grid::Floor::for_camera(&self.camera, bounds.height),
+            &nguo_ui_theme::Tokens::dark(),
+        );
 
         // The depth attachment has to match the colour attachment, which is the
         // whole frame. `pipeline.avatar` allocates the frame's ONE depth texture
@@ -323,6 +343,10 @@ impl Primitive for ClothPrimitive {
             width: clip_bounds.width,
             height: clip_bounds.height,
         };
+
+        // The floor first, always: it has no depth attachment, so being drawn
+        // first is the only thing that puts it behind everything else.
+        pipeline.grid.draw(encoder, target, pipeline.rect, clip);
 
         // Real geometry replaces the bring-up sheet rather than sharing the
         // frame with it: the sheet is a horizontal plane at y≈0, which would

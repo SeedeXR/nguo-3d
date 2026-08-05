@@ -88,6 +88,7 @@
 
 use crate::auto_drape::{drape_material, drape_scene, PLACEMENT_GAP};
 use crate::{Aabb, FabricPreset, Object, Scene};
+use engine_core::contact::{closest_point_on_triangle_bary, surface_normal_at};
 use glam::Vec3;
 
 /// Why a mesh cannot be used as an avatar collider or a garment.
@@ -433,61 +434,6 @@ impl FitReport {
     }
 }
 
-/// Closest point on triangle `abc` to `p` (Ericson, *Real-Time Collision Detection* §5.1.5).
-fn closest_on_tri(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    let (ab, ac, ap) = (b - a, c - a, p - a);
-    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return a;
-    }
-    let bp = p - b;
-    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
-    if d3 >= 0.0 && d4 <= d3 {
-        return b;
-    }
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        let t = if d1 - d3 != 0.0 { d1 / (d1 - d3) } else { 0.0 };
-        return a + ab * t;
-    }
-    let cp = p - c;
-    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
-    if d6 >= 0.0 && d5 <= d6 {
-        return c;
-    }
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        let t = if d2 - d6 != 0.0 { d2 / (d2 - d6) } else { 0.0 };
-        return a + ac * t;
-    }
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        let den = (d4 - d3) + (d5 - d6);
-        let t = if den != 0.0 { (d4 - d3) / den } else { 0.0 };
-        return b + (c - b) * t;
-    }
-    let den = va + vb + vc;
-    if den == 0.0 {
-        return a;
-    }
-    a + ab * (vb / den) + ac * (vc / den)
-}
-
-/// Barycentric coordinates of `q` in triangle `abc`. `q` comes from
-/// [`closest_on_tri`], so it is on the triangle and the result is in `[0, 1]`.
-fn bary(q: Vec3, a: Vec3, b: Vec3, c: Vec3) -> [f32; 3] {
-    let (u, v, w) = (b - a, c - a, q - a);
-    let (d00, d01, d11) = (u.dot(u), u.dot(v), v.dot(v));
-    let den = d00 * d11 - d01 * d01;
-    if den <= 0.0 {
-        return [1.0, 0.0, 0.0]; // degenerate: any corner will do, all three coincide
-    }
-    let (d20, d21) = (w.dot(u), w.dot(v));
-    let b1 = (d11 * d20 - d01 * d21) / den;
-    let b2 = (d00 * d21 - d01 * d20) / den;
-    [1.0 - b1 - b2, b1, b2]
-}
-
 /// A body triangle, its own normal, and the **angle-weighted pseudonormal** at each of its
 /// corners. Which of the two is the surface normal depends on where the closest point
 /// landed; see [`classify`].
@@ -508,29 +454,15 @@ impl BodyTri {
     }
 }
 
-/// Angle-weighted pseudonormals, one per vertex of `mesh`.
+/// Angle-weighted pseudonormals, one per vertex of `mesh` — a thin adaptor over
+/// [`engine_core::contact::pseudonormals`], which is where the rule and its two measured
+/// traps (bit-welding seam copies, skipping zero-area triangles) are documented. Shared
+/// with the solver's static mesh collider, which takes the side of a contact from the same
+/// field: the geometric pass and the barrier must not disagree about what "inside" means.
 ///
-/// **This is what makes the inside test right at a concave crease.** The sign of a
-/// point's distance to a mesh is only given by the closest *face's* normal when the
-/// closest feature is that face's interior. Where the closest feature is an edge or a
-/// vertex — every armpit and crotch — the criterion is Bærentzen & Aanæs's angle-weighted
-/// pseudonormal instead, and the face normal gives the wrong answer: measured over all
-/// 70 312 `men-shirt` vertices against the male proxy, the face normal missed 1 vertex
-/// that was 9.1 mm inside the armpit and called 2 more inside that were not.
-///
-/// Interpolating this per-vertex field over the triangle is the smooth version of the
-/// same test — it tends to the vertex pseudonormal at a corner and to the mean of the two
-/// incident faces along an edge, which are exactly the two pseudonormals that matter —
-/// and needs no adjacency structure at query time.
-///
-/// Two things it has to get right, both measured wrong first:
-/// * **Welding.** A glTF proxy splits vertices on UV and normal seams (the male
-///   collision proxy is 10 230 glTF vertices for 7 498 unique positions), and an angle
-///   sum over half of a vertex's incident faces is not its pseudonormal. Positions are
-///   welded on exact bits, which is right because a seam's copies come from one accessor
-///   value; `-0.0` is folded to `0.0` so the two spellings of zero weld together.
-/// * **Zero-area triangles** have no side, so they contribute nothing rather than a
-///   normalised garbage direction.
+/// **This is what makes the inside test right at a concave crease.** Measured over all
+/// 70 312 `men-shirt` vertices against the male proxy, the face normal missed 1 vertex that
+/// was 9.1 mm inside the armpit and called 2 more inside that were not.
 ///
 /// Ceiling: on a *cropped* body every vertex strictly inside the crop region has its whole
 /// triangle star (`avatar_collider_near` keeps every triangle touching it), so its
@@ -538,45 +470,8 @@ impl BodyTri {
 /// fringe and get a partial angle sum — harmless here because the fringe is a full margin
 /// (0.10 m) away from any garment vertex being tested.
 fn pseudonormals(mesh: &Object) -> Vec<Vec3> {
-    let key = |p: &[f32; 3]| {
-        // -0.0 and 0.0 are the same coordinate and must weld.
-        p.map(|c| {
-            if c == 0.0 {
-                0.0f32.to_bits()
-            } else {
-                c.to_bits()
-            }
-        })
-    };
-    let mut weld = std::collections::HashMap::with_capacity(mesh.positions.len());
-    let of: Vec<u32> = mesh
-        .positions
-        .iter()
-        .map(|p| {
-            let next = weld.len() as u32;
-            *weld.entry(key(p)).or_insert(next)
-        })
-        .collect();
-
-    let mut acc = vec![Vec3::ZERO; weld.len()];
-    for t in &mesh.tris {
-        let p = t.map(|i| Vec3::from(mesh.positions[i as usize]));
-        let face = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
-        if face == Vec3::ZERO {
-            continue;
-        }
-        for k in 0..3 {
-            let (u, v) = (
-                (p[(k + 1) % 3] - p[k]).normalize_or_zero(),
-                (p[(k + 2) % 3] - p[k]).normalize_or_zero(),
-            );
-            let angle = u.dot(v).clamp(-1.0, 1.0).acos();
-            acc[of[t[k] as usize] as usize] += face * angle;
-        }
-    }
-    of.iter()
-        .map(|&w| acc[w as usize].normalize_or_zero())
-        .collect()
+    let pos: Vec<Vec3> = mesh.positions.iter().map(|p| Vec3::from(*p)).collect();
+    engine_core::contact::pseudonormals(&pos, &mesh.tris)
 }
 
 /// Classify the points named by `active`, writing into `disp` the displacement that would
@@ -613,16 +508,18 @@ fn classify(
                 for &i in part {
                     let p = pts[i as usize];
                     let mut best = f32::INFINITY;
-                    let mut hit: Option<(&BodyTri, Vec3)> = None;
+                    let mut hit: Option<(&BodyTri, Vec3, [f32; 3])> = None;
                     for t in tri {
-                        let q = closest_on_tri(p, t.p[0], t.p[1], t.p[2]);
+                        // The weights come out of the same branch walk that produces `q`;
+                        // re-solving for them afterwards was a second projection per vertex.
+                        let (q, l) = closest_point_on_triangle_bary(p, t.p[0], t.p[1], t.p[2]);
                         let d = (p - q).length_squared();
                         if d < best {
                             best = d;
-                            hit = Some((t, q));
+                            hit = Some((t, q, l));
                         }
                     }
-                    let Some((t, q)) = hit else {
+                    let Some((t, q, l)) = hit else {
                         local.push(Vec3::ZERO);
                         continue;
                     };
@@ -640,12 +537,7 @@ fn classify(
                     // pollution and, at a crease, is still an escape from the facet that
                     // is actually closest. A zero normal (a degenerate triangle) has no
                     // side, so it never flips one.
-                    let l = bary(q, t.p[0], t.p[1], t.p[2]);
-                    let n = if l.iter().all(|&b| b > 1.0e-4) {
-                        t.f
-                    } else {
-                        (t.n[0] * l[0] + t.n[1] * l[1] + t.n[2] * l[2]).normalize_or_zero()
-                    };
+                    let n = surface_normal_at(l, t.f, t.n);
                     let depth = -(p - q).dot(n);
                     if n != Vec3::ZERO && depth > 0.0 {
                         local.push(q + t.f * gap - p);
@@ -1758,7 +1650,7 @@ pub(crate) mod tests {
             let mut n = Vec3::ZERO;
             let mut bq = p;
             for t in &tri {
-                let q = closest_on_tri(p, t.p[0], t.p[1], t.p[2]);
+                let q = engine_core::contact::closest_point_on_triangle(p, t.p[0], t.p[1], t.p[2]);
                 let d = (p - q).length_squared();
                 if d < best {
                     best = d;

@@ -55,3 +55,7 @@ memory/
 #      invites brute-force attempts even though the key itself is never in the
 #      tree. If this file is ever un-ignored, REDACT §1.3 first.
 notes_to_human.md
+
+# Learning/experiment scratch — Blender probes, viewport prototypes, throwaway
+# harnesses. NEVER committed; only what proves out is rewritten into production code.
+experiments/
