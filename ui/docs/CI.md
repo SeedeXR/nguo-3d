@@ -9,7 +9,7 @@ has **2 commits, both pushed** — `5077aef` (2026-08-02) and `7ce7827`
 (2026-08-03, the avatar bundle) — and three workflows have run on each.
 Verified with `gh run list --branch main` and `gh run view`:
 
-| Push | `CI` | `Licenses` | `Cross-platform` (advisory) |
+| Push | `CI` | `Licenses` | `Cross-platform` (DISABLED since 2026-08-05) |
 |---|---|---|---|
 | `5077aef` — initial | **success** | **success** | success |
 | `7ce7827` — avatar bundle | **FAILURE** | **FAILURE** | success |
@@ -111,10 +111,19 @@ Prerequisites beyond the Rust toolchain: `jq` (adapter assertions) and
 | `ci.yml` → `build` | macos-15 | **Required** |
 | `ci.yml` → `perf` | macos-15 | Advisory (`continue-on-error`) |
 | `licenses.yml` | ubuntu-latest | **Required** |
-| `cross-platform.yml` → `linux` | ubuntu-latest | Advisory (`continue-on-error`) |
-| `cross-platform.yml` → `windows` | windows-latest | Advisory (`continue-on-error`) |
+| `cross-platform.yml` → `linux` | ubuntu-latest | **DISABLED 2026-08-05** — manual `workflow_dispatch` only |
+| `cross-platform.yml` → `windows` | windows-latest | **DISABLED 2026-08-05** — manual `workflow_dispatch` only |
 
-Promote Linux to blocking at milestone M2 and Windows at M4: delete the job's
+**Linux and Windows are DISABLED and therefore UNTESTED (2026-08-05).** Nobody on the
+project has a machine to verify them on, so the `push`/`pull_request` triggers in
+`cross-platform.yml` are commented out and the jobs run only via manual
+`workflow_dispatch`. Do not describe either platform as supported or passing until
+that workflow has been run on real hardware. `licenses.yml` also uses an
+`ubuntu-latest` runner but is NOT a platform test — cargo-deny/cargo-about read
+licence metadata, which is platform-independent — and it stays enabled.
+
+Once a machine exists: uncomment the two triggers, then promote Linux to blocking at
+milestone M2 and Windows at M4 by deleting the job's
 `continue-on-error` line and add it to the branch-protection required-checks
 list.
 
@@ -511,7 +520,7 @@ well as pass.
 | `build` (release binaries) | ✅ | ✅ 4m37s | |
 | `perf` (measure only) | ✅ | ✅ 2m16s | |
 | `licenses.yml` | ✅ | ❌ 40s | `attribution-check` — see the status block at the top |
-| `cross-platform` linux + windows | ✅ | ✅ 8m25s | advisory; lavapipe and DX12 both survive |
+| `cross-platform` linux + windows | ✅ | ✅ 8m25s | **that run predates 2026-08-05; the workflow is now DISABLED and does not run on push** |
 
 So: **Metal on a hosted runner, LFS checkout, `$GITHUB_STEP_SUMMARY`,
 `Swatinem/rust-cache`, `taiki-e/install-action`, lavapipe, DX12 and the whole

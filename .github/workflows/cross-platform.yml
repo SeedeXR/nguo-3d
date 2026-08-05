@@ -2,17 +2,51 @@
 #
 # Secondary CI — Linux/Vulkan and Windows/DX12.
 #
-# STATUS: ADVISORY. Every job here is `continue-on-error: true`, so a red tick
-# never blocks a merge. That is deliberate: Windows is the least-mature wgpu
-# path — the reason it ships last but is tested continuously, so breakage
-# stays contained. The point right now is early
-# warning, not enforcement.
+# ============================================================================
+# STATUS 2026-08-05: **DISABLED ON PURPOSE — DO NOT "FIX" THE MISSING TRIGGERS.**
 #
-# TO MAKE THEM BLOCKING: delete the `continue-on-error` lines and add the jobs
-# to the branch protection required-checks list. Do that for Linux at
-# milestone M2 and for Windows at M4.
+# Maintainer decision: the only platform we can actually test today is macOS.
+# Nobody on the project has a Linux or Windows machine, so a green tick here
+# would assert something no human has verified, and a red one would be noise
+# nobody can act on. Cross-platform support is therefore a CLAIM, not a fact,
+# and this file no longer pretends otherwise.
+#
+# WHAT IS DISABLED: the `push` and `pull_request` triggers below are commented
+# out, so neither job runs automatically. The jobs themselves are left intact
+# and `workflow_dispatch` is kept, so the whole thing can still be run by hand
+# from the Actions tab the day a machine exists.
+#
+# TO RE-ENABLE: uncomment the two trigger lines below. That is the entire
+# change — nothing else here was touched, so it will run exactly as it did
+# before. Then remove this block and restore the ADVISORY note underneath.
+#
+# WHY NOT DELETE THE FILE: the jobs encode real, hard-won platform knowledge
+# (lavapipe for a GPU-less Linux runner; GNU Make being absent from the
+# windows-latest image; the DX12 backend selection). Deleting it would throw
+# that away and it would have to be rediscovered.
+#
+# CONSEQUENCE, stated plainly: from this commit onward, **Linux and Windows are
+# untested.** No document may describe them as supported or as passing. Any
+# claim that they work must be re-earned by running this workflow on real
+# hardware. `memory/AGENT_BRIEF.md` already records that cross-platform was
+# never verified — that is now enforced by the absence of a job rather than by
+# a footnote.
+# ============================================================================
+#
+# PRIOR STATUS (applies again once re-enabled): ADVISORY. Every job here is
+# `continue-on-error: true`, so a red tick never blocks a merge. Windows is the
+# least-mature wgpu path — the reason it ships last but was tested
+# continuously, so breakage stayed contained. The point was early warning, not
+# enforcement.
+#
+# TO MAKE THEM BLOCKING (after re-enabling): delete the `continue-on-error`
+# lines and add the jobs to the branch-protection required-checks list. Linux
+# at milestone M2, Windows at M4.
 #
 # The only REQUIRED workflows today are ci.yml (macOS) and licenses.yml.
+# licenses.yml also runs on ubuntu-latest, but it is NOT a platform test —
+# cargo-deny/cargo-about read licence metadata, which is platform-independent,
+# and it stays enabled.
 #
 # AVATAR BUNDLE: neither job here checks out LFS, so `assets/avatars/` is absent
 # and the bundle-gated avatar suites skip. `make test` depends on
@@ -26,9 +60,11 @@
 name: Cross-platform (advisory)
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  # DISABLED 2026-08-05 — see the header. Uncomment these two triggers to
+  # re-enable Linux/Windows CI once there is a machine to verify them on.
+  # push:
+  #   branches: [main]
+  # pull_request:
   workflow_dispatch:
 
 concurrency:
