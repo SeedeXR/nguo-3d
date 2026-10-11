@@ -35,7 +35,7 @@ pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 
 # Math. glam is bytemuck- and serde-friendly and maps cleanly to WGSL vec/mat.
-glam = { version = "0.30", features = ["bytemuck", "serde"] }
+glam = { version = "0.34", features = ["bytemuck", "serde"] }
 
 # Structured logging (proper logs + process observability).
 tracing = "0.1"
